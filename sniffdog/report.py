@@ -16,8 +16,12 @@ def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
     badge = BADGES[level]
     if sys.stdout.isatty():
         badge = f"{COLORS[level]}{badge}\033[0m"
-    lines = [f"Target: {target}", badge, "", verdict["summary"], "", "Reasons:"]
-    lines.extend(f"  - {reason}" for reason in verdict["reasons"])
+    lines = [f"Target: {target}", badge, "", verdict["summary"], "", "What this means:"]
+    bullets = verdict["what_this_means"]
+    if bullets:
+        lines.extend(f"  - {item['file_line']} ({item['rule']}): {item['explanation']}" for item in bullets)
+    else:
+        lines.append("  No file-level findings to explain.")
     lines.append("Next steps:")
     lines.extend(f"  - {step}" for step in verdict["next_steps"])
     lines.append(f"Findings ({len(findings)}):")

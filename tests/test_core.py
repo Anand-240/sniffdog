@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 import unittest
@@ -12,6 +13,7 @@ from unittest.mock import patch
 from sniffdog.clone import safe_clone
 from sniffdog.github_info import inspect
 from sniffdog.recruiter import search
+from sniffdog.report import render
 from sniffdog.scanner import run_all
 from sniffdog.scanner.vscode import strip_jsonc
 from sniffdog.verdict import explain, rule_verdict
@@ -73,6 +75,7 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(len(requests), 2)
             self.assertEqual(requests[0]["format"]["properties"]["verdict"]["enum"],
                              ["safe", "caution", "danger"])
+            self.assertIn("what_this_means", requests[0]["format"]["required"])
             self.assertEqual(requests[0]["options"]["num_ctx"], 4096)
             self.assertIn("Hinglish", requests[0]["messages"][0]["content"])
             sent = json.loads(requests[0]["messages"][1]["content"])["findings"]
@@ -83,6 +86,52 @@ class CoreTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_model_bullets_match_finding_rule_and_location(self):
+        findings = run_all(ROOT / "suspicious-assignment")
+        answer = {"verdict": "danger", "summary": "These files have risky commands. Review them before running.",
+                  "what_this_means": [
+                      {"file_line": ".npmrc:1", "rule": "npm-registry",
+                       "explanation": "This file reads a font."},
+                      {"file_line": ".npmrc:1", "rule": "npm-registry",
+                       "explanation": "This repo points npm at a nonstandard registry for packages."},
+                      {"file_line": "lib/config.js:2", "rule": "asset-evaluation",
+                       "explanation": "This line evaluates a font as code."},
+                      {"file_line": "lib/config.js:2", "rule": "obfuscated-names",
+                       "explanation": "These obfuscated-style names make the variables hard to read."},
+                      {"file_line": ".vscode/tasks.json:10", "rule": "vscode-folder-open",
+                       "explanation": "This task runs automatically when you open the folder in VS Code."}],
+                  "next_steps": ["Report the account to the platform."]}
+        body = json.dumps({"message": {"content": json.dumps(answer)}}).encode()
+        with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
+                patch("sniffdog.verdict.urlopen", side_effect=lambda *_args, **_kwargs: BytesIO(body)):
+            verdict, used_llm = explain(findings, {}, "en")
+        self.assertTrue(used_llm)
+        known = {(f"{item.file}:{item.line}", item.rule) for item in findings}
+        self.assertTrue(all((item["file_line"], item["rule"]) in known
+                            for item in verdict["what_this_means"]))
+        self.assertNotIn(("lib/config.js:2", "asset-evaluation"),
+                         {(item["file_line"], item["rule"]) for item in verdict["what_this_means"]})
+        self.assertEqual(len(verdict["what_this_means"]), 3)
+        section = render("demo", verdict, findings, used_llm).split("What this means:\n", 1)[1]
+        section = section.split("Next steps:", 1)[0]
+        for line in section.splitlines():
+            match = re.match(r"  - (.+:\d+) \(([\w-]+)\):", line)
+            self.assertIsNotNone(match)
+            self.assertIn(match.groups(), known)
+
+    def test_model_advice_cannot_send_user_to_recruiter(self):
+        findings = run_all(ROOT / "suspicious-assignment")
+        answer = {"verdict": "danger", "summary": "These files have risky commands. Review them before running.",
+                  "what_this_means": [], "next_steps": ["Report the account to the recruiter."]}
+        body = json.dumps({"message": {"content": json.dumps(answer)}}).encode()
+        with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
+                patch("sniffdog.verdict.urlopen", side_effect=lambda *_args, **_kwargs: BytesIO(body)) as fetch:
+            verdict, used_llm = explain(findings, {}, "en")
+        self.assertFalse(used_llm)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(verdict["discard_reason"], "answer advised contacting the recruiter")
+        self.assertIn("LinkedIn", " ".join(verdict["next_steps"]))
 
     def test_jsonc_preserves_string_and_trailing_commas(self):
         source = '{"url":"https://example.com/a,}", // comment\n "tasks":[{"command":"echo",},],}'
