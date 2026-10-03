@@ -1,0 +1,7 @@
+{
+  "name": "safe-todo-assignment",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {"dev": "node src/server.js"},
+  "dependencies": {"express": "^4.21.0", "cors": "^2.8.5"}
+}

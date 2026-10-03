@@ -1,0 +1,13 @@
+{
+  // This demo task only prints a harmless message.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "harmless greeting",
+      "type": "shell",
+      "command": "echo",
+      "args": ["hello"],
+      "runOptions": {"runOn": "folderOpen"},
+    },
+  ],
+}
