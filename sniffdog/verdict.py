@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from sniffdog.common import Finding
+from sniffdog.tracing import count
 
 
 SCHEMA = {
@@ -141,7 +142,9 @@ def explain(findings: list[Finding], context: dict, lang: str = "en") -> tuple[d
                           headers={"Content-Type": "application/json"}, method="POST")
         try:
             with urlopen(request, timeout=60) as response:
-                answer = json.loads(json.load(response)["message"]["content"])
+                raw = json.load(response)
+            count("eval_count", raw.get("eval_count", 0))
+            answer = json.loads(raw["message"]["content"])
         except (HTTPError, URLError, TimeoutError, OSError):
             break
         except (ValueError, KeyError, TypeError):

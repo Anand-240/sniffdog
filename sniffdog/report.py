@@ -11,7 +11,7 @@ COLORS = {"safe": "\033[32m", "caution": "\033[33m", "danger": "\033[31m"}
 
 def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
            github: dict | None = None, memory_notes: list[str] | None = None,
-           search_error: str | None = None) -> str:
+           search_error: str | None = None, tracing_on: bool = False) -> str:
     level = verdict["verdict"]
     badge = BADGES[level]
     if sys.stdout.isatty():
@@ -34,11 +34,12 @@ def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
         lines.extend(f"  {key}: {value}" for key, value in github.items())
     if search_error:
         lines.append(search_error)
-    lines.append("Memory:")
-    if memory_notes:
-        lines.extend(f"  - {note}" for note in memory_notes)
+    if memory_notes is None:
+        lines.append("memory: off")
     else:
-        lines.append("  off")
+        lines.append("memory: on")
+        lines.extend(f"  - {note}" for note in memory_notes)
+    lines.append(f"tracing: {'on' if tracing_on else 'off'}")
     lines.append(f"Explainer: {'Gemma (local)' if used_llm else 'built-in rules'}")
     if verdict.get("discard_reason"):
         lines.append(f"Gemma's answer was discarded: {verdict['discard_reason']}")

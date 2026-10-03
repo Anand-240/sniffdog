@@ -11,11 +11,13 @@ import unittest
 from unittest.mock import patch
 
 from sniffdog.clone import safe_clone
+from sniffdog.cli import scan_target
 from sniffdog.github_info import inspect
 from sniffdog.recruiter import search
 from sniffdog.report import render
 from sniffdog.scanner import run_all
 from sniffdog.scanner.vscode import strip_jsonc
+from sniffdog.tracing import before_send_transaction
 from sniffdog.verdict import explain, finding_bullets, rule_verdict, valid_sentence
 
 
@@ -188,3 +190,29 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertEqual(len(findings), 2)
         self.assertTrue(all(finding.severity == "medium" for finding in findings))
+
+    def test_full_scan_without_optional_services(self):
+        with patch.dict("os.environ", {"MONGODB_URI": "", "SENTRY_DSN": ""}):
+            verdict, findings, used_llm, github, error, memory_notes, tracing_on = scan_target(
+                str(ROOT / "safe-assignment"), True, "en", None, None)
+        self.assertEqual(verdict["verdict"], "safe")
+        self.assertEqual(findings, [])
+        self.assertFalse(used_llm)
+        self.assertEqual(github, {})
+        self.assertIsNone(error)
+        self.assertIsNone(memory_notes)
+        self.assertFalse(tracing_on)
+        report = render("safe", verdict, findings, used_llm, github, memory_notes,
+                        error, tracing_on)
+        self.assertIn("memory: off", report)
+        self.assertIn("tracing: off", report)
+
+    def test_tracing_drops_text_and_keeps_counts(self):
+        event = {"event_id": "abc", "type": "transaction", "transaction": "scan",
+                 "start_timestamp": "start", "timestamp": "end", "prompt": "private code",
+                 "contexts": {"trace": {"trace_id": "id", "status": "ok", "secret": "code"}},
+                 "spans": [{"op": "scripts", "description": "scripts", "data":
+                            {"findings": 2, "prompt": "private code"}}]}
+        clean = before_send_transaction(event, {})
+        self.assertNotIn("private code", json.dumps(clean))
+        self.assertEqual(clean["spans"][0]["data"], {"findings": 2})

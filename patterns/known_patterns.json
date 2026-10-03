@@ -1,0 +1,12 @@
+[
+  {"name": "npm lifecycle command", "description": "An install lifecycle script can run commands before the developer starts the app.", "snippet": "\"postinstall\": \"echo hello\""},
+  {"name": "npm lifecycle network call", "description": "An install script can fetch data from a web address.", "snippet": "\"postinstall\": \"curl https://example.com\""},
+  {"name": "VS Code folder task", "description": "A VS Code task marked folderOpen can run when a folder is opened.", "snippet": "\"runOptions\": {\"runOn\": \"folderOpen\"}"},
+  {"name": "encoded JavaScript", "description": "A long encoded string can make JavaScript harder to inspect.", "snippet": "const text = 'Y29uc29sZS5sb2coJ2hlbGxvJyk=';"},
+  {"name": "dynamic code evaluation", "description": "Evaluating a string as code can hide behavior until runtime.", "snippet": "eval('console.log(\"hello\")');"},
+  {"name": "disguised font", "description": "A file named like a font can contain JavaScript instead of font bytes.", "snippet": "inter.woff: console.log('hello')"},
+  {"name": "asset read and evaluation", "description": "Code can read text from an image or font path and evaluate it.", "snippet": "eval(readFileSync('inter.woff', 'utf8'));"},
+  {"name": "raw IP contact", "description": "A script can contact a raw IP address instead of a named host.", "snippet": "const url = 'http://203.0.113.10:1224';"},
+  {"name": "alternate npm registry", "description": "An npm configuration can redirect package downloads to another registry.", "snippet": "registry=https://npm.example-mirror.invalid/"},
+  {"name": "repository dependency", "description": "A package dependency can come directly from a GitHub repository.", "snippet": "\"ui-helpers\": \"github:demo-user/ui-helpers\""}
+]
