@@ -1,6 +1,8 @@
 """Tests for read-only scanners and clone URL validation."""
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
@@ -8,6 +10,8 @@ import unittest
 from unittest.mock import patch
 
 from sniffdog.clone import safe_clone
+from sniffdog.github_info import inspect
+from sniffdog.recruiter import search
 from sniffdog.scanner import run_all
 from sniffdog.scanner.vscode import strip_jsonc
 from sniffdog.verdict import explain, rule_verdict
@@ -93,3 +97,38 @@ class CoreTests(unittest.TestCase):
                 with self.subTest(url=url), self.assertRaises(ValueError):
                     safe_clone(url, Path("/tmp/unused"))
             run.assert_not_called()
+
+    def test_github_metadata_adds_age_and_commit_findings(self):
+        now = datetime.now(timezone.utc)
+        def created(days):
+            return (now - timedelta(days=days)).isoformat()
+        responses = []
+        for data in ({"created_at": created(3), "stargazers_count": 0},
+                     {"created_at": created(30), "public_repos": 1}, [{}]):
+            response = BytesIO(json.dumps(data).encode())
+            response.headers = {"Link": '<https://api.github.com/repos/a/b/commits?per_page=1&page=2>; rel="last"'}
+            responses.append(response)
+        with patch("sniffdog.github_info.urlopen", side_effect=responses) as fetch:
+            facts, findings = inspect("https://github.com/a/b")
+        self.assertEqual(facts["commits"], 2)
+        self.assertEqual({finding.rule for finding in findings},
+                         {"new-github-owner", "few-commits", "new-github-repo", "little-github-history"})
+        self.assertEqual(fetch.call_count, 3)
+        with patch("sniffdog.github_info.urlopen") as fetch:
+            self.assertEqual(inspect("https://example.com/a/b"), ({}, []))
+            fetch.assert_not_called()
+
+    def test_recruiter_search_requires_name_and_key(self):
+        with patch.dict("os.environ", {"SERPAPI_API_KEY": ""}):
+            self.assertEqual(search("Acme", None), ([], [], None))
+        result = {"organic_results": [{"title": "Acme fake recruiter report",
+                                       "link": "https://example.com/report",
+                                       "snippet": "Acme scam warning"}]}
+        responses = [BytesIO(json.dumps(result).encode()) for _ in range(2)]
+        with patch.dict("os.environ", {"SERPAPI_API_KEY": "test"}), \
+                patch("sniffdog.recruiter.urlopen", side_effect=responses):
+            results, findings, error = search("Acme", None)
+        self.assertIsNone(error)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(len(findings), 2)
+        self.assertTrue(all(finding.severity == "medium" for finding in findings))

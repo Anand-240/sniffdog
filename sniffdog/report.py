@@ -10,7 +10,8 @@ COLORS = {"safe": "\033[32m", "caution": "\033[33m", "danger": "\033[31m"}
 
 
 def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
-           github: dict | None = None, memory_notes: list[str] | None = None) -> str:
+           github: dict | None = None, memory_notes: list[str] | None = None,
+           search_error: str | None = None) -> str:
     level = verdict["verdict"]
     badge = BADGES[level]
     if sys.stdout.isatty():
@@ -27,6 +28,8 @@ def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
     if github:
         lines.append("GitHub facts:")
         lines.extend(f"  {key}: {value}" for key, value in github.items())
+    if search_error:
+        lines.append(search_error)
     lines.append("Memory:")
     if memory_notes:
         lines.extend(f"  - {note}" for note in memory_notes)
