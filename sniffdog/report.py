@@ -33,5 +33,7 @@ def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
     else:
         lines.append("  off")
     lines.append(f"Explainer: {'Gemma (local)' if used_llm else 'built-in rules'}")
+    if verdict.get("discard_reason"):
+        lines.append(f"Gemma's answer was discarded: {verdict['discard_reason']}")
     lines.append("Static checks only — nothing from the repo was executed. Not a guarantee.")
     return "\n".join(lines)

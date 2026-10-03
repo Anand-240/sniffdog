@@ -31,6 +31,8 @@ class CoreTests(unittest.TestCase):
         self.assertIn("high", {finding.severity for finding in findings})
         self.assertEqual(rule_verdict(findings), "danger")
         self.assertTrue(all(finding.line is not None for finding in findings))
+        asset = next(finding for finding in findings if finding.rule == "disguised-asset")
+        self.assertIn("actually JavaScript code pretending to be a font/image", asset.message)
 
     def test_ollama_cannot_lower_verdict(self):
         requests = []
@@ -62,10 +64,17 @@ class CoreTests(unittest.TestCase):
             self.assertFalse(used_llm)
             self.assertEqual(verdict["verdict"], "danger")
             self.assertIn("suspicious signal", verdict["summary"])
+            self.assertEqual(verdict["discard_reason"],
+                             "model verdict safe is below rule verdict danger")
+            self.assertEqual(len(requests), 2)
             self.assertEqual(requests[0]["format"]["properties"]["verdict"]["enum"],
                              ["safe", "caution", "danger"])
             self.assertEqual(requests[0]["options"]["num_ctx"], 4096)
             self.assertIn("Hinglish", requests[0]["messages"][0]["content"])
+            sent = json.loads(requests[0]["messages"][1]["content"])["findings"]
+            self.assertEqual(len(sent), 8)
+            self.assertEqual(set(sent[0]), {"rule", "severity", "file:line", "message"})
+            self.assertIn("Retry:", requests[1]["messages"][-1]["content"])
         finally:
             server.shutdown()
             server.server_close()

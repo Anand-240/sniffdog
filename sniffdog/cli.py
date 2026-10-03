@@ -26,7 +26,7 @@ def scan_target(target: str, no_llm: bool, lang: str, company: str | None,
             raise FileNotFoundError(f"Repository folder does not exist: {target}")
         findings = run_all(root)
     context = {"company": company, "recruiter": recruiter}
-    verdict, used_llm = (fallback(findings), False) if no_llm else explain(findings, context, lang)
+    verdict, used_llm = (fallback(findings, lang), False) if no_llm else explain(findings, context, lang)
     return verdict, findings, used_llm
 
 

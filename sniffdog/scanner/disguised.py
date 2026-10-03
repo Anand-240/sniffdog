@@ -32,9 +32,12 @@ def scan(root: Path) -> list[Finding]:
                 continue
             if not any(head.startswith(magic) for magic in MAGIC[suffix]):
                 evidence = short(head.decode("utf-8", errors="replace"))
-                severity = "high" if JS_LIKE.search(evidence) else "medium"
+                javascript = bool(JS_LIKE.search(evidence))
+                severity = "high" if javascript else "medium"
+                message = (f"This {suffix} file is actually JavaScript code pretending to be a font/image."
+                           if javascript else "This image or font file does not have the expected file signature.")
                 findings.append(Finding("disguised-asset", severity, file, 1, evidence,
-                                        "This image or font file does not have the expected file signature."))
+                                        message))
         elif suffix == ".svg":
             text = read_text(path)
             if text is None:
