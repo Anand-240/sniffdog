@@ -16,7 +16,7 @@ from sniffdog.recruiter import search
 from sniffdog.report import render
 from sniffdog.scanner import run_all
 from sniffdog.scanner.vscode import strip_jsonc
-from sniffdog.verdict import explain, rule_verdict
+from sniffdog.verdict import explain, finding_bullets, rule_verdict, valid_sentence
 
 
 ROOT = Path(__file__).resolve().parents[1] / "demo-repos"
@@ -42,14 +42,15 @@ class CoreTests(unittest.TestCase):
 
     def test_ollama_cannot_lower_verdict(self):
         requests = []
+        findings = run_all(ROOT / "suspicious-assignment")
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
                 length = int(self.headers["Content-Length"])
                 requests.append(json.loads(self.rfile.read(length)))
                 answer = {"message": {"content": json.dumps({
-                    "verdict": "safe", "summary": "No risk", "reasons": ["None"],
-                    "next_steps": ["Proceed"]})}}
+                    "verdict": "safe", "summary": "Static checks found risks. Review the files.",
+                    "what_this_means": finding_bullets(findings, "en")})}}
                 body = json.dumps(answer).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -64,24 +65,19 @@ class CoreTests(unittest.TestCase):
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            findings = run_all(ROOT / "suspicious-assignment")
             with patch.dict("os.environ", {"OLLAMA_HOST": f"http://127.0.0.1:{server.server_port}"}):
                 verdict, used_llm = explain(findings, {}, "hinglish")
-            self.assertFalse(used_llm)
+            self.assertTrue(used_llm)
             self.assertEqual(verdict["verdict"], "danger")
-            self.assertIn("suspicious signal", verdict["summary"])
-            self.assertEqual(verdict["discard_reason"],
-                             "model verdict safe is below rule verdict danger")
-            self.assertEqual(len(requests), 2)
+            self.assertEqual(len(requests), 1)
             self.assertEqual(requests[0]["format"]["properties"]["verdict"]["enum"],
                              ["safe", "caution", "danger"])
             self.assertIn("what_this_means", requests[0]["format"]["required"])
-            self.assertEqual(requests[0]["options"]["num_ctx"], 4096)
+            self.assertEqual(requests[0]["options"], {"temperature": 0, "num_ctx": 4096})
             self.assertIn("Hinglish", requests[0]["messages"][0]["content"])
             sent = json.loads(requests[0]["messages"][1]["content"])["findings"]
-            self.assertEqual(len(sent), 8)
-            self.assertEqual(set(sent[0]), {"rule", "severity", "file:line", "message"})
-            self.assertIn("Retry:", requests[1]["messages"][-1]["content"])
+            self.assertEqual(len(sent), 5)
+            self.assertEqual(set(sent[0]), {"rule", "file_line", "message"})
         finally:
             server.shutdown()
             server.server_close()
@@ -99,6 +95,8 @@ class CoreTests(unittest.TestCase):
                        "explanation": "This line evaluates a font as code."},
                       {"file_line": "lib/config.js:2", "rule": "obfuscated-names",
                        "explanation": "These obfuscated-style names make the variables hard to read."},
+                      {"file_line": "lib/config.js:7", "rule": "encoded-code",
+                       "explanation": "This file contains a long encoded string or escape sequence."},
                       {"file_line": ".vscode/tasks.json:10", "rule": "vscode-folder-open",
                        "explanation": "This task runs automatically when you open the folder in VS Code."}],
                   "next_steps": ["Report the account to the platform."]}
@@ -112,7 +110,9 @@ class CoreTests(unittest.TestCase):
                             for item in verdict["what_this_means"]))
         self.assertNotIn(("lib/config.js:2", "asset-evaluation"),
                          {(item["file_line"], item["rule"]) for item in verdict["what_this_means"]})
-        self.assertEqual(len(verdict["what_this_means"]), 3)
+        self.assertEqual(len(verdict["what_this_means"]), 5)
+        self.assertEqual(verdict["what_this_means"][0]["explanation"],
+                         "This repo points npm at a nonstandard registry for packages.")
         section = render("demo", verdict, findings, used_llm).split("What this means:\n", 1)[1]
         section = section.split("Next steps:", 1)[0]
         for line in section.splitlines():
@@ -132,6 +132,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(fetch.call_count, 2)
         self.assertEqual(verdict["discard_reason"], "answer advised contacting the recruiter")
         self.assertIn("LinkedIn", " ".join(verdict["next_steps"]))
+
+    def test_conditional_risk_is_allowed_but_completed_harm_is_not(self):
+        self.assertTrue(valid_sentence("If you run npm install, this script could contact a server."))
+        for sentence in ("Your system is compromised.", "The script has infected your computer.",
+                         "The code is stealing secrets.", "Report the account to the recruiter."):
+            with self.subTest(sentence=sentence):
+                self.assertFalse(valid_sentence(sentence))
 
     def test_jsonc_preserves_string_and_trailing_commas(self):
         source = '{"url":"https://example.com/a,}", // comment\n "tasks":[{"command":"echo",},],}'
