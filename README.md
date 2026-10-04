@@ -12,9 +12,9 @@ Fake hiring exercises have been used to deliver malware to developers. [Microsof
 | Hidden JavaScript | encoded strings, `eval`, code after long whitespace, obfuscated names, child processes, raw IP URLs |
 | Disguised files | fonts or images containing JavaScript; scripts or extra content in SVG files |
 | Dependencies | custom npm registries, remote packages, lookalike names, unusual lockfile sources, checked-in `node_modules` |
-| Optional context | GitHub age and commit history, recruiter scam search results, previous scans and known patterns |
+| Optional checks and context | GitHub age and commit history, past scans and known patterns; recruiter web results are context only |
 
-**Rules decide the verdict; Gemma reads the code.** A high-severity rule means DANGER, a medium-severity rule means CAUTION, and no such rules means SAFE. Each reason cites a file and line. The report gives fixed, plain-English consequences for the rules, decodes a small printable payload when possible, and asks local Gemma to describe up to five short code snippets. Gemma cannot lower the verdict. Invalid or unavailable model replies are omitted.
+**Rules decide the verdict; Gemma reads the code.** A high-severity finding means DANGER, a medium finding means CAUTION when there is no high finding, and otherwise the verdict is SAFE. File findings cite a line when available; GitHub account findings do not. The report gives fixed, plain-English consequences for the rules, decodes printable payloads as data only (4 KB limit; about 120 characters shown), and asks local Gemma to describe up to five code snippets of at least 25 characters. Gemma cannot lower the verdict. Invalid or unavailable model replies are omitted.
 
 A local model keeps source snippets on your machine, works for local folders without an internet connection after model download, has no per-request API fee, and lets you inspect the prompt and checks in this repository. Remote clones, optional GitHub/recruiter lookups, and optional MongoDB memory still need network access.
 
@@ -46,9 +46,9 @@ sniffdog demo-repos/suspicious-assignment --no-llm --json
 python3 -m unittest discover -s tests -v
 ```
 
-The command exits **0** for SAFE, **1** for CAUTION, **2** for DANGER, and **3** if it cannot fetch the repository. A GitHub pull-request workflow runs the deterministic JSON scan when package or editor-task files change and fails on DANGER.
+The command exits **0** for SAFE, **1** for CAUTION, **2** for DANGER, and **3** if it cannot fetch the repository. SAFE, CAUTION, and DANGER each have their own next steps; only DANGER advises reporting a suspicious account. A GitHub pull-request workflow runs the deterministic JSON scan when package or editor-task files change and fails on DANGER.
 
-Use repeatable `--exclude PATH` to skip a directory prefix relative to the scan root, such as `--exclude demo-repos`; globs are not supported.
+Use repeatable `--exclude PATH` to skip a directory prefix relative to the scan root, such as `--exclude demo-repos`; globs are not supported. If a local `.kilo` worktree contains another copy of the demos, add `--exclude .kilo` for a root scan.
 
 The two `demo-repos/` folders are **harmless imitations**. The suspicious one contains inert examples of all planted signals, including a reserved example IP address and an invalid registry domain. Scan them; do not run their npm scripts.
 
@@ -57,8 +57,8 @@ The two `demo-repos/` folders are **harmless imitations**. The suspicious one co
 All optional services are off when their environment variables are unset. Use [.env.example](.env.example) as a list of variables to export; SniffDog does not automatically load that file.
 
 - `MONGODB_URI` enables past-scan notes and pattern matching. Run `sniffdog seed` after setting it and pulling `nomic-embed-text`.
-- `SENTRY_DSN` enables tracing with span names, timings, status, and numeric counts only. Source code and prompts are removed from transactions.
-- `GITHUB_TOKEN` can raise GitHub API limits for remote scans. `SERPAPI_API_KEY` enables optional public recruiter/company searches when you supply names.
+- `SENTRY_DSN` enables tracing with span names, timings, status, and numeric counts only. Source code, prompts, finding text, and query text are removed; automatic integrations are off and the CLI flushes before exit. Set `SENTRY_DEBUG=1` for SDK diagnostics.
+- `GITHUB_TOKEN` can raise GitHub API limits for remote scans. `SERPAPI_API_KEY` enables optional public recruiter/company searches when you supply names. Web results appear under "Recruiter check (web)" and never change the verdict.
 
 For Atlas memory, create a **Vector Search** index named `pattern_index` on database `sniffdog`, collection `patterns`. Its definition is:
 
