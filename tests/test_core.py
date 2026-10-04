@@ -155,6 +155,10 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(valid_code_sentence("The script has infected your computer.", snippet))
         self.assertFalse(valid_code_sentence("Report the account to the recruiter.", snippet))
         self.assertFalse(valid_code_sentence(" ".join(["word"] * 36), snippet))
+        chained = "node scripts/setup.js && curl -s https://example.com > /dev/null"
+        self.assertFalse(valid_code_sentence("It downloads a file and discards the output.", chained))
+        self.assertTrue(valid_code_sentence("It runs setup.js, then downloads a file and discards the output.",
+                                            chained))
 
     def test_local_ollama_only_reads_snippets_and_cannot_lower_verdict(self):
         requests = []
@@ -193,10 +197,10 @@ class CoreTests(unittest.TestCase):
                 self.assertLessEqual(len(snippet), 4200)
                 self.assertGreaterEqual(len(snippet.splitlines()[1].strip()), 25)
             output = render("demo", result, findings, used_llm, github, notes, error, tracing)
-            self.assertIn("Explainer: Gemma (local) read 3 snippets", output)
+            self.assertIn("Explainer: Gemma (local) read 2 snippets", output)
             self.assertIn("lib/config.js:7 (encoded-code) — unwrapped from base64:", output)
             self.assertNotIn("Hidden payload unwrapped", output)
-            self.assertEqual(output.count("    Gemma:"), 3)
+            self.assertEqual(output.count("    Gemma:"), 2)
             self.assertNotIn(".vscode/tasks.json:10 (vscode-folder-open):\n    echo hello\n    Gemma:", output)
             self.assertTrue(all(item["source"] == "rule" for item in result["what_this_means"]))
         finally:
@@ -208,7 +212,8 @@ class CoreTests(unittest.TestCase):
         findings = run_all(ROOT / "suspicious-assignment")
         snippets = [{"file_line": "package.json:6", "rule": "package-script",
                      "code": "node scripts/setup.js && echo hello"}]
-        body = BytesIO(json.dumps({"message": {"content": '{"sentence":"It prints hello in the terminal."}'}}).encode())
+        body = BytesIO(json.dumps({"message": {"content":
+                                    '{"sentence":"It runs setup.js, then prints hello in the terminal."}'}}).encode())
         with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
                 patch("sniffdog.verdict.urlopen", return_value=body) as fetch:
             result, used_llm = explain(findings, snippets)

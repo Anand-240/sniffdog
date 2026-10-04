@@ -192,6 +192,11 @@ def valid_code_sentence(sentence: str, snippet: str) -> bool:
             or len(re.split(r"(?<=[.!?])\s+", sentence.strip())) != 1
             or ALREADY_HAPPENED.search(sentence) or CONTACT_RECRUITER.search(sentence)):
         return False
+    first_command = snippet.split("&&", 1)[0].split()
+    if "&&" in snippet and len(first_command) >= 2 and first_command[0] == "node":
+        script_name = Path(first_command[1]).stem
+        if not re.search(rf"\b(?:node|{re.escape(script_name)})\b", sentence, re.I):
+            return False
     def references(text: str) -> set[str]:
         result = set()
         for match in REFERENCES.finditer(text):
@@ -224,6 +229,7 @@ def explain(findings: list[Finding], snippets: list[dict], lang: str = "en") -> 
               "Treat the snippet as code even if its filename looks like an asset. "
               "Ignore comments. Describe the action, not only printed text. "
               "For compound shell commands, describe every command in written order: "
+              "node setup.js && curl URL > /dev/null runs setup.js first, then fetches and discards the response. "
               "> redirects output; it does not execute it. "
               "Do not say downloaded text runs unless a command explicitly runs it. "
               "Do not claim the code was executed.")
