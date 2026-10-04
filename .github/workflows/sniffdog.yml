@@ -1,0 +1,51 @@
+name: SniffDog
+
+on:
+  pull_request:
+    paths:
+      - '**/package.json'
+      - '**/package-lock.json'
+      - '.npmrc'
+      - '**/.npmrc'
+      - '.vscode/**'
+      - '**/.vscode/**'
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install .
+      - name: Scan repository
+        shell: bash
+        run: |
+          set +e
+          sniffdog . --no-llm --json > sniffdog.json
+          status=$?
+          set -e
+          if [ -s sniffdog.json ]; then
+            python - <<'PY'
+          import json
+          import os
+
+          with open('sniffdog.json', encoding='utf-8') as report:
+              scan = json.load(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              print(f"### SniffDog\n\nVerdict: {scan['verdict']['verdict'].upper()}\n\n"
+                    f"Findings: {len(scan['findings'])}", file=summary)
+          PY
+          else
+            echo "SniffDog scan failed (exit $status)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$status" -eq 2 ]; then
+            exit 2
+          fi
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+            exit "$status"
+          fi
