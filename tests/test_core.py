@@ -21,7 +21,7 @@ from sniffdog.report import render
 from sniffdog.scanner import run_all
 from sniffdog.scanner.vscode import strip_jsonc
 from sniffdog.tracing import before_send_transaction
-from sniffdog.verdict import (CONSEQUENCES, explain, prepare_snippets, rule_verdict,
+from sniffdog.verdict import (CONSEQUENCES, explain, fallback, prepare_snippets, rule_verdict,
                               unwrap_payload, valid_code_sentence)
 
 
@@ -78,6 +78,30 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(any(item["rule"] == "package-script" and
                                 item["file"] == ".kilo/package.json" for item in findings))
             self.assertEqual(scan("--exclude", ".kilo"), (0, []))
+
+    def test_next_steps_match_verdict(self):
+        medium = Finding("remote-dependency", "medium", "package.json", 1, "example", "Review source.")
+        high = Finding("package-script", "high", "package.json", 2, "curl example", "Runs on install.")
+        caution_steps = [
+            "Open the cited files and check what they run before installing.",
+            "Prefer running it in a separate VM or container without saved passwords or keys.",
+            "Verify the recruiter on the company's official site.",
+        ]
+        self.assertEqual(fallback([medium])["next_steps"], caution_steps)
+        self.assertEqual(fallback([])["next_steps"], [
+            "Verify the recruiter on the company's official site before running the project.",
+            "Review the repository and its dependencies yourself.",
+        ])
+        self.assertEqual(fallback([high])["next_steps"], [
+            "Do not run npm install or open this folder in VS Code yet.",
+            "If you must investigate, use a throwaway VM with no secrets and no network.",
+            "Verify the recruiter on the company's official site. If suspicious activity "
+            "is confirmed, report the account to LinkedIn, GitHub, or the job board.",
+        ])
+        for lang in ("en", "hinglish"):
+            for findings in ([], [medium]):
+                self.assertNotIn("report", " ".join(fallback(findings, lang)["next_steps"]).lower())
+            self.assertIn("report", " ".join(fallback([high], lang)["next_steps"]).lower())
 
     def test_every_scanner_rule_has_a_plain_consequence(self):
         from sniffdog import github_info, recruiter

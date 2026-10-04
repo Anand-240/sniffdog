@@ -87,6 +87,13 @@ def fallback(findings: list[Finding], lang: str = "en") -> dict:
                     "what_this_means": [],
                     "next_steps": ["Project chalane se pehle recruiter ko official site par verify karo.",
                                    "Repo aur dependencies khud bhi review karo."]}
+        if level == "caution":
+            return {"verdict": level,
+                    "summary": f"Static checks mein {len(findings)} suspicious signals mile. Files pehle review karo.",
+                    "what_this_means": finding_bullets(findings, lang),
+                    "next_steps": ["Install karne se pehle cited files kholo aur dekho kya run hota hai.",
+                                   "Saved passwords ya keys ke bina alag VM ya container mein chalana behtar hai.",
+                                   "Recruiter ko company ki official site par verify karo."]}
         return {"verdict": level,
                 "summary": f"Static checks mein {len(findings)} suspicious signals mile. Files pehle review karo.",
                 "what_this_means": finding_bullets(findings, lang),
@@ -100,6 +107,14 @@ def fallback(findings: list[Finding], lang: str = "en") -> dict:
                 "what_this_means": [],
                 "next_steps": ["Verify the recruiter on the company's official site before running the project.",
                                "Review the repository and its dependencies yourself."]}
+    if level == "caution":
+        return {"verdict": level,
+                "summary": (f"Static checks found {len(findings)} suspicious signal(s) in this repository. "
+                            "Review the cited files before running anything."),
+                "what_this_means": finding_bullets(findings, lang),
+                "next_steps": ["Open the cited files and check what they run before installing.",
+                               "Prefer running it in a separate VM or container without saved passwords or keys.",
+                               "Verify the recruiter on the company's official site."]}
     return {"verdict": level,
             "summary": (f"Static checks found {len(findings)} suspicious signal(s) in this repository. "
                         "Review the cited files before running anything."),
