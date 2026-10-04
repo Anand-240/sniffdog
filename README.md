@@ -6,7 +6,7 @@ Review coding assignment repositories before you run them.
 
 [![SniffDog workflow](https://github.com/Anand-240/sniffdog/actions/workflows/sniffdog.yml/badge.svg)](https://github.com/Anand-240/sniffdog/actions/workflows/sniffdog.yml) [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
 
-Demo video: [Watch SniffDog](https://youtu.be/1zoa5F4wANQ) | DEV post: [DEV_POST_URL]
+Demo video: [Watch SniffDog](https://youtu.be/1zoa5F4wANQ) | DEV post: [Read the DEV post](https://dev.to/anand240/sniffdog-i-built-my-job-hunting-friend-a-sniffer-dog-that-sniffs-out-malware-in-fake-recruiter-355m)
 
 ## Why this exists
 
