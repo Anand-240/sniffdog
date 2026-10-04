@@ -18,10 +18,22 @@ from sniffdog.report import render
 from sniffdog.scanner import run_all
 from sniffdog.scanner.vscode import strip_jsonc
 from sniffdog.tracing import before_send_transaction
-from sniffdog.verdict import explain, finding_bullets, rule_verdict, valid_sentence
+from sniffdog.verdict import explain, rule_verdict, valid_sentence
 
 
 ROOT = Path(__file__).resolve().parents[1] / "demo-repos"
+MODEL_SENTENCES = {
+    "npm-registry": "When you run npm install, npm could fetch packages from an unknown registry onto your machine.",
+    "vscode-folder-open": "As soon as you open this folder in VS Code, the task could run commands on your machine.",
+    "encoded-code": "If you run this project, the encoded string could execute hidden commands on your machine.",
+    "asset-evaluation": "If you run this project, text inside the image could execute as code on your machine.",
+    "hidden-code": "When you run this project, code hidden after whitespace could run on your machine.",
+}
+
+
+def model_bullets(findings):
+    return [{"rule": item.rule, "file_line": f"{item.file}:{item.line}",
+             "explanation": MODEL_SENTENCES[item.rule]} for item in findings[:5]]
 
 
 class CoreTests(unittest.TestCase):
@@ -52,7 +64,7 @@ class CoreTests(unittest.TestCase):
                 requests.append(json.loads(self.rfile.read(length)))
                 answer = {"message": {"content": json.dumps({
                     "verdict": "safe", "summary": "Static checks found risks. Review the files.",
-                    "what_this_means": finding_bullets(findings, "en")})}}
+                    "what_this_means": model_bullets(findings)})}}
                 body = json.dumps(answer).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -90,17 +102,17 @@ class CoreTests(unittest.TestCase):
         answer = {"verdict": "danger", "summary": "These files have risky commands. Review them before running.",
                   "what_this_means": [
                       {"file_line": ".npmrc:1", "rule": "npm-registry",
-                       "explanation": "This file reads a font."},
+                       "explanation": "When you run this project, a font could load on your machine."},
                       {"file_line": ".npmrc:1", "rule": "npm-registry",
-                       "explanation": "This repo points npm at a nonstandard registry for packages."},
+                       "explanation": MODEL_SENTENCES["npm-registry"]},
                       {"file_line": "lib/config.js:2", "rule": "asset-evaluation",
-                       "explanation": "This line evaluates a font as code."},
+                       "explanation": "If you run this project, this image could execute on your machine."},
                       {"file_line": "lib/config.js:2", "rule": "obfuscated-names",
-                       "explanation": "These obfuscated-style names make the variables hard to read."},
+                       "explanation": "If you review this project, obfuscated names could hide intent from you."},
                       {"file_line": "lib/config.js:7", "rule": "encoded-code",
-                       "explanation": "This file contains a long encoded string or escape sequence."},
+                       "explanation": MODEL_SENTENCES["encoded-code"]},
                       {"file_line": ".vscode/tasks.json:10", "rule": "vscode-folder-open",
-                       "explanation": "This task runs automatically when you open the folder in VS Code."}],
+                       "explanation": MODEL_SENTENCES["vscode-folder-open"]}],
                   "next_steps": ["Report the account to the platform."]}
         body = json.dumps({"message": {"content": json.dumps(answer)}}).encode()
         with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
@@ -114,13 +126,15 @@ class CoreTests(unittest.TestCase):
                          {(item["file_line"], item["rule"]) for item in verdict["what_this_means"]})
         self.assertEqual(len(verdict["what_this_means"]), 5)
         self.assertEqual(verdict["what_this_means"][0]["explanation"],
-                         "This repo points npm at a nonstandard registry for packages.")
+                         MODEL_SENTENCES["npm-registry"])
+        self.assertEqual(verdict["what_this_means"][0]["source"], "Gemma")
+        self.assertEqual(verdict["what_this_means"][3]["source"], "rule")
         section = render("demo", verdict, findings, used_llm).split("What this means:\n", 1)[1]
         section = section.split("Next steps:", 1)[0]
         for line in section.splitlines():
-            match = re.match(r"  - (.+:\d+) \(([\w-]+)\):", line)
+            match = re.match(r"  - (.+:\d+) \(([\w-]+)\) \((Gemma|rule)\):", line)
             self.assertIsNotNone(match)
-            self.assertIn(match.groups(), known)
+            self.assertIn(match.groups()[:2], known)
 
     def test_model_advice_cannot_send_user_to_recruiter(self):
         findings = run_all(ROOT / "suspicious-assignment")
@@ -141,6 +155,15 @@ class CoreTests(unittest.TestCase):
                          "The code is stealing secrets.", "Report the account to the recruiter."):
             with self.subTest(sentence=sentence):
                 self.assertFalse(valid_sentence(sentence))
+
+    def test_model_sentence_needs_consequence_opener_and_original_wording(self):
+        rule = "This task runs automatically when you open the folder in VS Code."
+        self.assertFalse(valid_sentence(rule, rule))
+        self.assertFalse(valid_sentence("The task could run on your machine when you open the folder.", rule))
+        self.assertFalse(valid_sentence("When you open the folder in VS Code, this task runs "
+                                        "automatically when you open the folder in VS Code.", rule))
+        self.assertTrue(valid_sentence("As soon as you open this folder in VS Code, the task could run "
+                                       "commands on your machine.", rule))
 
     def test_jsonc_preserves_string_and_trailing_commas(self):
         source = '{"url":"https://example.com/a,}", // comment\n "tasks":[{"command":"echo",},],}'

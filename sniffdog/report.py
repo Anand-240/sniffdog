@@ -19,7 +19,8 @@ def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
     lines = [f"Target: {target}", badge, "", verdict["summary"], "", "What this means:"]
     bullets = verdict["what_this_means"]
     if bullets:
-        lines.extend(f"  - {item['file_line']} ({item['rule']}): {item['explanation']}" for item in bullets)
+        lines.extend(f"  - {item['file_line']} ({item['rule']}) ({item['source']}): "
+                     f"{item['explanation']}" for item in bullets)
     else:
         lines.append("  No file-level findings to explain.")
     lines.append("Next steps:")
