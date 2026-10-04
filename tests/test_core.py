@@ -1,7 +1,7 @@
 """Tests for static scanning, local explanations and optional services."""
 
 import base64
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO, StringIO
@@ -9,8 +9,9 @@ import json
 from pathlib import Path
 import tempfile
 from threading import Thread
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sniffdog.clone import safe_clone
 from sniffdog.cli import main, scan_target
@@ -278,10 +279,55 @@ class CoreTests(unittest.TestCase):
 
     def test_tracing_drops_text_and_keeps_counts(self):
         event = {"event_id": "abc", "type": "transaction", "transaction": "scan",
-                 "start_timestamp": "start", "timestamp": "end", "prompt": "private code",
-                 "contexts": {"trace": {"trace_id": "id", "status": "ok", "secret": "code"}},
-                 "spans": [{"op": "scripts", "description": "scripts", "data":
-                            {"findings": 2, "prompt": "private code"}}]}
+                 "start_timestamp": "start", "timestamp": "end", "platform": "python",
+                 "prompt": "private code", "message": "finding text",
+                 "breadcrumbs": [{"message": "finding text"}],
+                 "request": {"data": "private code"},
+                 "tags": {"query": "db.find({'secret': 'private code'})"},
+                 "contexts": {"trace": {"trace_id": "id", "span_id": "parent",
+                                         "status": "ok", "secret": "private code"},
+                              "mongodb": {"query": "db.find({'secret': 'private code'})"}},
+                 "spans": [{"op": "scripts", "description": "scripts", "span_id": "child",
+                            "trace_id": "id", "start_timestamp": "start", "timestamp": "end",
+                            "tags": {"prompt": "private code"},
+                            "data": {"findings": 2, "prompt": "private code",
+                                     "query": "db.find({'secret': 'private code'})"}}]}
         clean = before_send_transaction(event, {})
-        self.assertNotIn("private code", json.dumps(clean))
+        self.assertIsNotNone(clean)
+        self.assertEqual(clean["type"], "transaction")
+        self.assertEqual(clean["transaction"], "scan")
+        self.assertEqual(clean["contexts"]["trace"],
+                         {"trace_id": "id", "span_id": "parent", "status": "ok"})
+        self.assertEqual({key: clean["spans"][0][key] for key in
+                          ("op", "description", "start_timestamp", "timestamp")},
+                         {"op": "scripts", "description": "scripts",
+                          "start_timestamp": "start", "timestamp": "end"})
         self.assertEqual(clean["spans"][0]["data"], {"findings": 2})
+        for secret in ("private code", "finding text", "db.find"):
+            self.assertNotIn(secret, json.dumps(clean))
+
+    def test_tracing_debug_and_flush_on_cli_exit(self):
+        from sniffdog import tracing
+
+        sdk = SimpleNamespace(init=Mock(), flush=Mock())
+        with patch.dict("sys.modules", {"sentry_sdk": sdk}), \
+                patch.dict("os.environ", {"SENTRY_DSN": "https://key@example.com/1",
+                                          "SENTRY_DEBUG": "1"}), \
+                patch.object(tracing, "_sdk", None):
+            self.assertTrue(tracing.configure())
+            self.assertTrue(sdk.init.call_args.kwargs["debug"])
+            self.assertFalse(sdk.init.call_args.kwargs["default_integrations"])
+            self.assertFalse(sdk.init.call_args.kwargs["auto_enabling_integrations"])
+            tracing.flush()
+            sdk.flush.assert_called_once_with(timeout=5)
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("sniffdog.cli.flush") as flush, \
+                patch.dict("os.environ", {"SENTRY_DSN": "", "MONGODB_URI": ""}):
+            output = StringIO()
+            with patch("sys.argv", ["sniffdog", directory, "--no-llm"]), redirect_stdout(output):
+                self.assertEqual(main(), 0)
+            with patch("sys.argv", ["sniffdog", str(Path(directory) / "missing"), "--no-llm"]), \
+                    redirect_stderr(output):
+                self.assertEqual(main(), 3)
+            self.assertEqual(flush.call_count, 2)

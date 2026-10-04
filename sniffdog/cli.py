@@ -14,7 +14,7 @@ from sniffdog.memory import connect, notes, save, seed
 from sniffdog.recruiter import search
 from sniffdog.report import render
 from sniffdog.scanner import run_all
-from sniffdog.tracing import configure, count, span, transaction
+from sniffdog.tracing import configure, count, flush, span, transaction
 from sniffdog.verdict import explain, fallback, prepare_snippets
 
 
@@ -99,16 +99,18 @@ def main() -> int:
         verdict, findings, used_llm, github, search_error, memory_notes, tracing_on = scan_target(
             args.target, args.no_llm, args.lang, args.company, args.recruiter,
             tuple(args.exclude))
+        if args.json:
+            print(json.dumps({"target": args.target, "verdict": verdict, "findings":
+                              [finding.to_dict() for finding in findings], "used_llm": used_llm,
+                              "github": github, "recruiter_search_error": search_error,
+                              "memory_notes": memory_notes, "tracing_on": tracing_on}, indent=2))
+        else:
+            print(render(args.target, verdict, findings, used_llm, github, memory_notes,
+                         search_error, tracing_on))
+        return {"safe": 0, "caution": 1, "danger": 2}[verdict["verdict"]]
     except (FileNotFoundError, ValueError, subprocess.CalledProcessError,
             subprocess.TimeoutExpired, OSError) as error:
         print(f"Could not fetch repository: {error}", file=sys.stderr)
         return 3
-    if args.json:
-        print(json.dumps({"target": args.target, "verdict": verdict, "findings":
-                          [finding.to_dict() for finding in findings], "used_llm": used_llm,
-                          "github": github, "recruiter_search_error": search_error,
-                          "memory_notes": memory_notes, "tracing_on": tracing_on}, indent=2))
-    else:
-        print(render(args.target, verdict, findings, used_llm, github, memory_notes,
-                     search_error, tracing_on))
-    return {"safe": 0, "caution": 1, "danger": 2}[verdict["verdict"]]
+    finally:
+        flush()

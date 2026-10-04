@@ -13,7 +13,7 @@ def before_send(event, hint):
 
 def before_send_transaction(event, hint):
     kept = {key: event[key] for key in ("event_id", "type", "transaction",
-                                         "start_timestamp", "timestamp") if key in event}
+                                         "start_timestamp", "timestamp", "platform") if key in event}
     trace = event.get("contexts", {}).get("trace", {})
     kept["contexts"] = {"trace": {key: trace[key] for key in
                                   ("trace_id", "span_id", "parent_span_id", "op", "status")
@@ -43,12 +43,18 @@ def configure() -> bool:
     try:
         sentry_sdk.init(dsn=dsn, traces_sample_rate=1.0, send_default_pii=False,
                         before_send=before_send, before_send_transaction=before_send_transaction,
-                        default_integrations=False, auto_enabling_integrations=False)
+                        default_integrations=False, auto_enabling_integrations=False,
+                        debug=os.getenv("SENTRY_DEBUG") == "1")
     except (ValueError, OSError):
         _sdk = None
         return False
     _sdk = sentry_sdk
     return True
+
+
+def flush() -> None:
+    if _sdk is not None:
+        _sdk.flush(timeout=5)
 
 
 @contextmanager
