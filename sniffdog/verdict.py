@@ -1,31 +1,55 @@
-"""Keep rule severity authoritative while explaining findings locally."""
+"""Keep rule verdicts authoritative and ask Gemma only about code."""
 
+import base64
+import binascii
 import json
 import os
+from pathlib import Path
 import re
-from copy import deepcopy
-from difflib import SequenceMatcher
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from sniffdog.common import Finding
+from sniffdog.common import Finding, read_text
+from sniffdog.scanner.obfuscation import BASE64, ESCAPES
 from sniffdog.tracing import count
 
 
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "verdict": {"type": "string", "enum": ["safe", "caution", "danger"]},
-        "summary": {"type": "string"},
-        "what_this_means": {"type": "array", "items": {"type": "object", "properties": {
-            "rule": {"type": "string"}, "file_line": {"type": "string"},
-            "explanation": {"type": "string", "maxLength": 300}},
-            "required": ["rule", "file_line", "explanation"]}},
-    },
-    "required": ["verdict", "summary", "what_this_means"],
-    "additionalProperties": False,
+CONSEQUENCES = {
+    "package-script": "When npm runs this package script, its command executes on your machine.",
+    "vscode-folder-open": "Opening this folder in VS Code can start the task's command on your machine.",
+    "vscode-auto-tasks": "This setting lets VS Code run folder tasks automatically when you open the project.",
+    "encoded-code": "If code decodes and executes this string, hidden instructions could run on your machine.",
+    "hidden-code": "If this file runs, code hidden after the whitespace runs like other JavaScript.",
+    "obfuscated-names": "These names make the file's behavior harder to check before you run it.",
+    "dynamic-evaluation": "If this path runs, text passed to eval can execute as JavaScript on your machine.",
+    "process-execution": "If this path runs, it can start another process or shell command on your machine.",
+    "raw-ip-url": "If this path runs, it can contact the server at the IP address shown in the finding.",
+    "long-line": "A very long code line makes the file harder to inspect before you run it.",
+    "disguised-asset": "If another script executes this file, JavaScript can run despite its font or image name.",
+    "asset-evaluation": "If this path runs, text read from a font or image can execute as JavaScript.",
+    "svg-trailing-code": "Content after the SVG closing tag may be processed by software that reads this file.",
+    "svg-script": "Opening this SVG in software that permits scripts could run its embedded JavaScript.",
+    "svg-base64": "Encoded text in this SVG can hide content that is harder to inspect before opening it.",
+    "npm-registry": "When you run npm install, npm can fetch packages from the configured server.",
+    "remote-dependency": "When you install dependencies, npm can fetch this package from the listed external source.",
+    "typosquat": "Installing this similarly named dependency could put a different package on your machine.",
+    "lockfile-source": "Installing from this lockfile can download a package from the listed server.",
+    "committed-node-modules": "Bundled dependency files may be used without fetching fresh copies from npm.",
+    "new-github-owner": "This account has little history for you to check before trusting the assignment.",
+    "few-commits": "Few commits give you less history to review before running the project.",
+    "new-github-repo": "This repository has little age or history to help you judge its source.",
+    "little-github-history": "Limited GitHub activity gives you less context for checking this source.",
+    "recruiter-scam-report": "A search result links this name to a scam report that you should verify independently.",
 }
+CODE_RULES = {"package-script", "hidden-code", "encoded-code", "disguised-asset",
+              "vscode-folder-open"}
+SCHEMA = {"type": "object", "properties": {"sentence": {
+    "type": "string", "description": "One complete sentence describing the code's action."}},
+          "required": ["sentence"], "additionalProperties": False}
+REFERENCES = re.compile(
+    r"https?://[^\s<>\"']+|(?<![\w@])(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?|"
+    r"(?<![\w@])(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d+)?", re.I)
 CONTACT_RECRUITER = re.compile(
     r"\b(?:report|contact|message|notify|tell|send|reply)\b[^.!?\n]{0,80}\bto\s+"
     r"(?:(?:the|your|a)\s+)?recruiter\b|"
@@ -47,9 +71,8 @@ def finding_bullets(findings: list[Finding], lang: str) -> list[dict]:
     for item in findings:
         if item.line is None:
             continue
-        explanation = f"Yeh signal dekho: {item.message}" if lang == "hinglish" else item.message
         bullets.append({"rule": item.rule, "file_line": f"{item.file}:{item.line}",
-                        "explanation": explanation, "source": "rule"})
+                        "explanation": CONSEQUENCES.get(item.rule, item.message), "source": "rule"})
         if len(bullets) == 5:
             break
     return bullets
@@ -87,67 +110,93 @@ def fallback(findings: list[Finding], lang: str = "en") -> dict:
                            "is confirmed, report the account to LinkedIn, GitHub, or the job board."]}
 
 
-def meaning_matches(finding: Finding, explanation: str) -> bool:
-    ignored = {"this", "that", "file", "code", "with", "from", "into", "could"}
-    source = {word for word in re.findall(r"[a-z]{4,}", finding.message.lower()) if word not in ignored}
-    words = set(re.findall(r"[a-z]{4,}", explanation.lower()))
-    effect = explanation.split(",", 1)[-1]
-    action = re.search(r"\b(?:run|start|execut\w*|download|fetch|install|load|read|come|find|connect\w*|"
-                       r"evaluat(?:e|es|ed|ing)|send|contact|replace|pull)\b", effect, re.I)
-    return bool(source & words) and bool(action)
+def unwrap_payload(root: Path, finding: Finding) -> str | None:
+    """Decode the cited string as data, with a hard output cap."""
+    if finding.rule != "encoded-code" or finding.line is None:
+        return None
+    source = read_text(root / finding.file)
+    if source is None:
+        return None
+    lines = source.splitlines()
+    if finding.line < 1 or finding.line > len(lines):
+        return None
+    prefix = finding.evidence.removesuffix("…")
+    line = lines[finding.line - 1]
+    for pattern in (BASE64, ESCAPES):
+        for match in pattern.finditer(line):
+            token = match.group()
+            if not token.startswith(prefix):
+                continue
+            try:
+                if pattern is BASE64:
+                    if len(token) > 5464:
+                        continue
+                    decoded = base64.b64decode(token, validate=True)
+                else:
+                    if len(token) // 4 > 4096:
+                        continue
+                    decoded = bytes.fromhex(token.replace("\\x", ""))
+                if not decoded or len(decoded) > 4096:
+                    continue
+                text = decoded.decode("utf-8")
+            except (ValueError, UnicodeDecodeError, binascii.Error):
+                continue
+            printable = sum(char.isprintable() or char in "\n\r\t" for char in text)
+            if printable / len(text) >= 0.85:
+                return text
+    return None
 
 
-def valid_sentence(value: str, rule_message: str = "") -> bool:
-    if not value or len(value) > 300 or CONTACT_RECRUITER.search(value) or ALREADY_HAPPENED.search(value):
+def clean_snippet(value: str) -> str:
+    lines = value.splitlines()[:40]
+    text = "\n".join(lines)[:4096]
+    return "".join(char if char.isprintable() or char in "\n\t" else "?" for char in text)
+
+
+def prepare_snippets(root: Path, findings: list[Finding]) -> tuple[list[dict], list[dict]]:
+    snippets = []
+    payloads = []
+    for finding in findings:
+        location = f"{finding.file}:{finding.line}" if finding.line else finding.file
+        decoded = unwrap_payload(root, finding) if finding.rule == "encoded-code" else None
+        if decoded:
+            preview = clean_snippet(decoded)[:200].replace("\n", "\\n")
+            payloads.append({"file_line": location, "preview": preview + ("…" if len(decoded) > 200 else "")})
+        if finding.rule not in CODE_RULES or len(snippets) == 5:
+            continue
+        code = decoded if finding.rule == "encoded-code" else finding.evidence
+        if code:
+            snippets.append({"file_line": location, "rule": finding.rule,
+                             "code": clean_snippet(code)})
+    return snippets, payloads
+
+
+def valid_code_sentence(sentence: str, snippet: str) -> bool:
+    if (not isinstance(sentence, str) or not 3 <= len(sentence.split()) <= 35
+            or not sentence.strip().endswith((".", "!", "?"))
+            or len(re.split(r"(?<=[.!?])\s+", sentence.strip())) != 1
+            or ALREADY_HAPPENED.search(sentence) or CONTACT_RECRUITER.search(sentence)):
         return False
-    sentence = value.strip().lstrip("\"'“”‘’ ")
-    if not re.match(r"^(?:If you|When you|As soon as you|Once you|Opening|Running)\b", sentence, re.I):
-        return False
-    normalized = re.sub(r"[^\w\s]", "", sentence.lower())
-    rule_normalized = re.sub(r"[^\w\s]", "", rule_message.lower())
-    if rule_message and SequenceMatcher(None, normalized, rule_normalized).ratio() > 0.6:
-        return False
-    return len(re.split(r"(?<=[.!?])\s+", sentence)) == 1
+    def references(text: str) -> set[str]:
+        result = set()
+        for match in REFERENCES.finditer(text):
+            reference = match.group().rstrip(".,;:!?)").lower()
+            if (not reference.startswith(("http://", "https://"))
+                    and reference.rsplit(".", 1)[-1] in {"js", "jsx", "ts", "tsx", "json", "py", "sh",
+                                                          "woff", "woff2", "png", "jpg", "jpeg", "svg"}):
+                continue
+            result.add(reference)
+        return result
+
+    cited = references(sentence)
+    observed = references(snippet)
+    observed.update(urlparse(reference).hostname.lower() for reference in tuple(observed)
+                    if reference.startswith(("http://", "https://")) and urlparse(reference).hostname)
+    return cited <= observed
 
 
-def opening_for(rule: str) -> str:
-    if rule in {"npm-registry", "package-script", "remote-dependency", "typosquat"}:
-        return "When you run npm install"
-    if rule == "vscode-folder-open":
-        return "As soon as you open this folder in VS Code"
-    return "If you run this project"
-
-
-def explain(findings: list[Finding], context: dict, lang: str = "en") -> tuple[dict, bool]:
+def explain(findings: list[Finding], snippets: list[dict], lang: str = "en") -> tuple[dict, bool]:
     result = fallback(findings, lang)
-    selected = [item for item in findings if item.line is not None][:5]
-    if not selected:
-        return result, False
-    language = "Use Hinglish in Roman script." if lang == "hinglish" else "Use plain English."
-    system = ("For each finding, write ONE plain sentence about the consequence on the user's "
-              "machine if they run or open the project. Begin with 'If you', 'When you', "
-              "'As soon as you', 'Once you', 'Opening', or 'Running'. Explain the effect, "
-              "not the rule wording. Copy rule and "
-              "file_line exactly; return one what_this_means object per finding, in order. "
-              + language + " Nothing was executed. Never claim the user's machine is infected "
-              "or compromised. Only describe what the files would do if run. Never tell the "
-              "user to contact the recruiter. Describe the direct action; do not invent "
-              "a security scan or a pause. Examples of explanation text:\n"
-              "package-script → 'When you run npm install, this script starts by itself and "
-              "could download something onto your machine.'\n"
-              "vscode-folder-open → 'As soon as you open this folder in VS Code, the task "
-              "could run commands on your machine without another click.'\n"
-              "npm-registry → 'When you run npm install, packages come from an unknown server "
-              "instead of the official npm registry, so any of them could be replaced with malware.'")
-    brief = [{"file_line": f"{item.file}:{item.line}", "rule": item.rule,
-              "message": item.message} for item in selected]
-    schema = deepcopy(SCHEMA)
-    schema["properties"]["what_this_means"]["minItems"] = len(selected)
-    schema["properties"]["what_this_means"]["maxItems"] = len(selected)
-    payload = {"model": os.getenv("OLLAMA_MODEL", "gemma3:1b"), "stream": False,
-               "format": schema, "options": {"temperature": 0, "num_ctx": 4096},
-               "messages": [{"role": "system", "content": system},
-                            {"role": "user", "content": json.dumps({"findings": brief, "context": context})}]}
     host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     try:
         parsed = urlparse(host)
@@ -155,102 +204,37 @@ def explain(findings: list[Finding], context: dict, lang: str = "en") -> tuple[d
         return result, False
     if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
         return result, False
-    best = {}
-    best_summary = None
-    reason = "invalid response"
-    for attempt in range(2):
-        if attempt:
-            payload["messages"].append({"role": "system", "content":
-                                        "Retry: begin each sentence with If you, When you, As soon as you, "
-                                        "Once you, Opening, or Running. "
-                                        "Describe a consequence on the user's machine, not the rule message. "
-                                        "Copy each rule and file_line exactly. Nothing has happened yet."})
+    system = ("In one sentence, describe what this code would do if it ran. "
+              "Only describe the code itself. Do not guess intent. "
+              "Treat the snippet as code even if its filename looks like an asset. "
+              "Ignore comments. Describe the action, not only printed text. "
+              "For compound shell commands, describe every command in written order: "
+              "> redirects output; it does not execute it. "
+              "Do not say downloaded text runs unless a command explicitly runs it. "
+              "Do not claim the code was executed.")
+    if lang == "hinglish":
+        system += " Answer in Hinglish using Roman script."
+    read = 0
+    for item in snippets:
+        payload = {"model": os.getenv("OLLAMA_MODEL", "gemma3:1b"), "stream": False,
+                   "format": SCHEMA, "options": {"temperature": 0, "num_ctx": 4096},
+                   "messages": [{"role": "system", "content": system},
+                                {"role": "user", "content":
+                                 f"{item['file_line']}\n{item['code']}\n"
+                                 "Describe the action in one complete sentence."}]}
         request = Request(f"{host}/api/chat", data=json.dumps(payload).encode(),
                           headers={"Content-Type": "application/json"}, method="POST")
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=30) as response:
                 raw = json.load(response)
             count("eval_count", raw.get("eval_count", 0))
-            answer = json.loads(raw["message"]["content"])
+            sentence = json.loads(raw["message"]["content"])["sentence"].strip()
         except (HTTPError, URLError, TimeoutError, OSError):
             break
-        except (ValueError, KeyError, TypeError):
-            reason = "invalid JSON response"
+        except (ValueError, KeyError, TypeError, AttributeError):
             continue
-        if not isinstance(answer, dict) or not isinstance(answer.get("what_this_means"), list):
-            reason = "missing explanation list"
-            continue
-        text_parts = [answer.get("summary", "")]
-        text_parts.extend(item.get("explanation", "") for item in answer["what_this_means"]
-                          if isinstance(item, dict))
-        text_parts.extend(answer.get("next_steps", []) if isinstance(answer.get("next_steps"), list) else [])
-        if CONTACT_RECRUITER.search(" ".join(part for part in text_parts if isinstance(part, str))):
-            reason = "answer advised contacting the recruiter"
-            continue
-        summary = answer.get("summary")
-        if isinstance(summary, str):
-            sentences = re.split(r"(?<=[.!?])\s+", summary.strip())
-            if (len(sentences) == 2 and len(summary) <= 350
-                    and not CONTACT_RECRUITER.search(summary)
-                    and not ALREADY_HAPPENED.search(summary)):
-                best_summary = summary
-        for finding in selected:
-            location = f"{finding.file}:{finding.line}"
-            key = (location, finding.rule)
-            if key in best:
-                continue
-            for item in answer["what_this_means"]:
-                if (not isinstance(item, dict) or item.get("file_line") != location
-                        or item.get("rule") != finding.rule
-                        or not isinstance(item.get("explanation"), str)):
-                    continue
-                sentence = item["explanation"].strip()
-                if valid_sentence(sentence, finding.message) and meaning_matches(finding, sentence):
-                    best[key] = {"rule": finding.rule, "file_line": location,
-                                 "explanation": sentence, "source": "Gemma"}
-                    break
-        if len(best) >= min(3, len(selected)):
-            break
-        reason = f"only {len(best)} of {len(selected)} sentences passed validation"
-    if len(best) < min(3, len(selected)) and reason != "answer advised contacting the recruiter":
-        focused_schema = {"type": "object", "properties": {"explanation": {
-            "type": "string", "maxLength": 300}},
-            "required": ["explanation"], "additionalProperties": False}
-        for finding in selected:
-            location = f"{finding.file}:{finding.line}"
-            if (location, finding.rule) in best:
-                continue
-            opening = opening_for(finding.rule)
-            focused = {"model": payload["model"], "stream": False, "format": focused_schema,
-                       "options": {"temperature": 0, "num_ctx": 4096},
-                       "messages": [{"role": "system", "content":
-                                     "Write one sentence about the consequence on the user's machine. "
-                                     "Nothing was executed. Never claim infection or compromise. "
-                                     "Do not copy the rule message or invent unrelated actions. " + language},
-                                    {"role": "user", "content":
-                                     f"{location} {finding.rule}: {finding.message}\n"
-                                     f"Begin exactly with '{opening},' and explain what could happen "
-                                     "on the user's machine. Write one sentence only."}]}
-            request = Request(f"{host}/api/chat", data=json.dumps(focused).encode(),
-                              headers={"Content-Type": "application/json"}, method="POST")
-            try:
-                with urlopen(request, timeout=60) as response:
-                    raw = json.load(response)
-                count("eval_count", raw.get("eval_count", 0))
-                sentence = json.loads(raw["message"]["content"])["explanation"].strip()
-            except (HTTPError, URLError, TimeoutError, OSError, ValueError, KeyError, TypeError):
-                continue
-            if valid_sentence(sentence, finding.message) and meaning_matches(finding, sentence):
-                best[(location, finding.rule)] = {"rule": finding.rule, "file_line": location,
-                                                  "explanation": sentence, "source": "Gemma"}
-        reason = f"only {len(best)} of {len(selected)} sentences passed validation"
-    result["what_this_means"] = [best.get((item["file_line"], item["rule"]), item)
-                                 for item in result["what_this_means"]]
-    if best_summary:
-        result["summary"] = best_summary
-    used_llm = len(best) >= min(3, len(selected))
-    result["gemma_passed"] = len(best)
-    result["gemma_total"] = len(selected)
-    if not best:
-        result["discard_reason"] = reason
-    return result, used_llm
+        if valid_code_sentence(sentence, item["code"]):
+            item["gemma"] = sentence
+            read += 1
+    result["snippets_read"] = read
+    return result, read > 0

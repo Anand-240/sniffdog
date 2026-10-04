@@ -15,7 +15,7 @@ from sniffdog.recruiter import search
 from sniffdog.report import render
 from sniffdog.scanner import run_all
 from sniffdog.tracing import configure, count, span, transaction
-from sniffdog.verdict import explain, fallback
+from sniffdog.verdict import explain, fallback, prepare_snippets
 
 
 def scan_target(target: str, no_llm: bool, lang: str, company: str | None,
@@ -33,16 +33,18 @@ def scan_target(target: str, no_llm: bool, lang: str, company: str | None,
                     commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
                                             check=True, capture_output=True, text=True).stdout.strip()
                 findings = run_all(root)
+                snippets, payloads = prepare_snippets(root, findings)
         else:
             root = Path(target).expanduser()
             if not root.is_dir():
                 raise FileNotFoundError(f"Repository folder does not exist: {target}")
             findings = run_all(root)
+            snippets, payloads = prepare_snippets(root, findings)
         with span("github"):
             github, github_findings = inspect(target) if remote else ({}, [])
             count("findings", len(github_findings))
         with span("recruiter"):
-            search_results, recruiter_findings, search_error = search(company, recruiter)
+            _, recruiter_findings, search_error = search(company, recruiter)
             count("findings", len(recruiter_findings))
         findings.extend(github_findings)
         findings.extend(recruiter_findings)
@@ -56,10 +58,10 @@ def scan_target(target: str, no_llm: bool, lang: str, company: str | None,
                 if memory_notes is None:
                     client.close()
                     client = None
-        context = {"company": company, "recruiter": recruiter, "github": github,
-                   "recruiter_search": search_results, "memory_notes": memory_notes or []}
         with span("llm"):
-            verdict, used_llm = (fallback(findings, lang), False) if no_llm else explain(findings, context, lang)
+            verdict, used_llm = (fallback(findings, lang), False) if no_llm else explain(findings, snippets, lang)
+        verdict["snippets"] = snippets
+        verdict["hidden_payloads"] = payloads
         if client is not None:
             if remote:
                 with span("memory"):

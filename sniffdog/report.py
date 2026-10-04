@@ -23,6 +23,16 @@ def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
                      f"{item['explanation']}" for item in bullets)
     else:
         lines.append("  No file-level findings to explain.")
+    for payload in verdict.get("hidden_payloads", []):
+        lines.append(f"Hidden payload unwrapped ({payload['file_line']}):")
+        lines.append(f"  {payload['preview']}")
+    if verdict.get("snippets"):
+        lines.append("Code snippets:")
+        for item in verdict["snippets"]:
+            lines.append(f"  - {item['file_line']} ({item['rule']}):")
+            lines.extend(f"    {line}" for line in item["code"].splitlines())
+            if item.get("gemma"):
+                lines.append(f"    Gemma: {item['gemma']}")
     lines.append("Next steps:")
     lines.extend(f"  - {step}" for step in verdict["next_steps"])
     lines.append(f"Findings ({len(findings)}):")
@@ -42,13 +52,8 @@ def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
         lines.extend(f"  - {note}" for note in memory_notes)
     lines.append(f"tracing: {'on' if tracing_on else 'off'}")
     if used_llm:
-        lines.append("Explainer: Gemma (local)")
-    elif "gemma_passed" in verdict:
-        lines.append(f"Explainer: built-in rules (Gemma passed "
-                     f"{verdict['gemma_passed']} of {verdict['gemma_total']})")
+        lines.append(f"Explainer: Gemma (local) read {verdict['snippets_read']} snippets")
     else:
         lines.append("Explainer: built-in rules")
-    if verdict.get("discard_reason") and not verdict.get("gemma_passed"):
-        lines.append(f"Gemma's answer was discarded: {verdict['discard_reason']}")
     lines.append("Static checks only — nothing from the repo was executed. Not a guarantee.")
     return "\n".join(lines)

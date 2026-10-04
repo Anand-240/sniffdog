@@ -1,39 +1,30 @@
-"""Tests for read-only scanners and clone URL validation."""
+"""Tests for static scanning, local explanations and optional services."""
 
-from pathlib import Path
+import base64
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
-import re
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import tempfile
 from threading import Thread
 import unittest
 from unittest.mock import patch
 
 from sniffdog.clone import safe_clone
 from sniffdog.cli import scan_target
+from sniffdog.common import Finding, short
 from sniffdog.github_info import inspect
 from sniffdog.recruiter import search
 from sniffdog.report import render
 from sniffdog.scanner import run_all
 from sniffdog.scanner.vscode import strip_jsonc
 from sniffdog.tracing import before_send_transaction
-from sniffdog.verdict import explain, meaning_matches, rule_verdict, valid_sentence
+from sniffdog.verdict import (CONSEQUENCES, explain, prepare_snippets, rule_verdict,
+                              unwrap_payload, valid_code_sentence)
 
 
 ROOT = Path(__file__).resolve().parents[1] / "demo-repos"
-MODEL_SENTENCES = {
-    "npm-registry": "When you run npm install, npm could fetch packages from an unknown registry onto your machine.",
-    "vscode-folder-open": "As soon as you open this folder in VS Code, the task could run commands on your machine.",
-    "encoded-code": "If you run this project, the encoded string could execute hidden commands on your machine.",
-    "asset-evaluation": "If you run this project, text inside the image could execute as code on your machine.",
-    "hidden-code": "When you run this project, code hidden after whitespace could run on your machine.",
-}
-
-
-def model_bullets(findings):
-    return [{"rule": item.rule, "file_line": f"{item.file}:{item.line}",
-             "explanation": MODEL_SENTENCES[item.rule]} for item in findings[:5]]
 
 
 class CoreTests(unittest.TestCase):
@@ -43,29 +34,73 @@ class CoreTests(unittest.TestCase):
 
     def test_suspicious_assignment_detects_planted_signals(self):
         findings = run_all(ROOT / "suspicious-assignment")
-        rules = {finding.rule for finding in findings}
-        self.assertEqual(rules, {"package-script", "vscode-folder-open", "obfuscated-names",
-                                 "encoded-code", "dynamic-evaluation", "process-execution",
-                                 "raw-ip-url", "hidden-code", "disguised-asset", "asset-evaluation",
-                                 "npm-registry", "remote-dependency", "typosquat"})
-        self.assertIn("high", {finding.severity for finding in findings})
+        self.assertEqual({item.rule for item in findings},
+                         {"package-script", "vscode-folder-open", "obfuscated-names",
+                          "encoded-code", "dynamic-evaluation", "process-execution",
+                          "raw-ip-url", "hidden-code", "disguised-asset", "asset-evaluation",
+                          "npm-registry", "remote-dependency", "typosquat"})
         self.assertEqual(rule_verdict(findings), "danger")
-        self.assertTrue(all(finding.line is not None for finding in findings))
-        asset = next(finding for finding in findings if finding.rule == "disguised-asset")
-        self.assertIn("actually JavaScript code pretending to be a font/image", asset.message)
+        self.assertTrue(all(item.line is not None for item in findings))
+        self.assertIn("actually JavaScript code pretending to be a font/image",
+                      next(item for item in findings if item.rule == "disguised-asset").message)
 
-    def test_ollama_cannot_lower_verdict(self):
+    def test_every_scanner_rule_has_a_plain_consequence(self):
+        from sniffdog import github_info, recruiter
+        from sniffdog.scanner import deps, disguised, obfuscation, scripts, vscode
+
+        names = set()
+        for module in (deps, disguised, obfuscation, scripts, vscode, github_info, recruiter):
+            import re
+            names.update(re.findall(r'(?:Finding|add)\("([a-z][a-z-]+)"', Path(module.__file__).read_text()))
+        self.assertEqual(names - CONSEQUENCES.keys(), set())
+        self.assertTrue(all(value.endswith(".") for value in CONSEQUENCES.values()))
+
+    def test_static_decode_is_printable_and_capped_without_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "payload.js"
+            message = b"console.log('safe');\n" * 12
+            token = base64.b64encode(message).decode()
+            path.write_text(f"const x = '{token}';\n")
+            finding = Finding("encoded-code", "high", "payload.js", 1, short(token), "encoded")
+            with patch("subprocess.run", side_effect=AssertionError("executed")):
+                self.assertEqual(unwrap_payload(root, finding), message.decode())
+            snippets, payloads = prepare_snippets(root, [finding])
+            self.assertEqual(snippets[0]["code"], message.decode().rstrip("\n"))
+            self.assertIn("console.log", payloads[0]["preview"])
+
+            escaped = "\\x41" * 40
+            path.write_text(f"const x = '{escaped}';\n")
+            finding = Finding("encoded-code", "high", "payload.js", 1, short(escaped), "encoded")
+            self.assertEqual(unwrap_payload(root, finding), "A" * 40)
+
+            for binary in (b"A" * 4097, b"\0" * 180):
+                token = base64.b64encode(binary).decode()
+                path.write_text(f"const x = '{token}';\n")
+                finding = Finding("encoded-code", "high", "payload.js", 1, short(token), "encoded")
+                self.assertIsNone(unwrap_payload(root, finding))
+
+    def test_url_grounding_and_completed_harm(self):
+        snippet = "curl https://example.com/a && echo 203.0.113.10"
+        self.assertTrue(valid_code_sentence("It contacts the server at https://example.com/a.", snippet))
+        self.assertTrue(valid_code_sentence("It contacts the example.com server.", snippet))
+        self.assertFalse(valid_code_sentence("It contacts https://other.example/a.", snippet))
+        self.assertFalse(valid_code_sentence("It contacts 203.0.113.11.", snippet))
+        self.assertTrue(valid_code_sentence("It runs the Node.js script.", "node setup.js"))
+        self.assertFalse(valid_code_sentence("hello", "echo hello"))
+        self.assertFalse(valid_code_sentence("Your system is compromised.", snippet))
+        self.assertFalse(valid_code_sentence("The script has infected your computer.", snippet))
+        self.assertFalse(valid_code_sentence("Report the account to the recruiter.", snippet))
+        self.assertFalse(valid_code_sentence(" ".join(["word"] * 36), snippet))
+
+    def test_local_ollama_only_reads_snippets_and_cannot_lower_verdict(self):
         requests = []
-        findings = run_all(ROOT / "suspicious-assignment")
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
-                length = int(self.headers["Content-Length"])
-                requests.append(json.loads(self.rfile.read(length)))
-                answer = {"message": {"content": json.dumps({
-                    "verdict": "safe", "summary": "Static checks found risks. Review the files.",
-                    "what_this_means": model_bullets(findings)})}}
-                body = json.dumps(answer).encode()
+                requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                body = json.dumps({"message": {"content": json.dumps({
+                    "verdict": "safe", "sentence": "It prints a harmless message."})}}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -79,150 +114,41 @@ class CoreTests(unittest.TestCase):
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            with patch.dict("os.environ", {"OLLAMA_HOST": f"http://127.0.0.1:{server.server_port}"}):
-                verdict, used_llm = explain(findings, {}, "hinglish")
+            with patch.dict("os.environ", {"OLLAMA_HOST": f"http://127.0.0.1:{server.server_port}",
+                                        "MONGODB_URI": "", "SENTRY_DSN": ""}):
+                result, findings, used_llm, github, error, notes, tracing = scan_target(
+                    str(ROOT / "suspicious-assignment"), False, "hinglish", None, None)
+            self.assertEqual(result["verdict"], "danger")
             self.assertTrue(used_llm)
-            self.assertEqual(verdict["verdict"], "danger")
-            self.assertEqual(len(requests), 1)
-            self.assertEqual(requests[0]["format"]["properties"]["verdict"]["enum"],
-                             ["safe", "caution", "danger"])
-            self.assertIn("what_this_means", requests[0]["format"]["required"])
-            self.assertEqual(requests[0]["options"], {"temperature": 0, "num_ctx": 4096})
-            self.assertIn("Hinglish", requests[0]["messages"][0]["content"])
-            sent = json.loads(requests[0]["messages"][1]["content"])["findings"]
-            self.assertEqual(len(sent), 5)
-            self.assertEqual(set(sent[0]), {"rule", "file_line", "message"})
+            self.assertEqual(len(requests), 5)
+            for request in requests:
+                self.assertEqual(request["options"], {"temperature": 0, "num_ctx": 4096})
+                self.assertIn("sentence", request["format"]["required"])
+                self.assertIn("Hinglish", request["messages"][0]["content"])
+                snippet = request["messages"][1]["content"]
+                self.assertLessEqual(len(snippet.splitlines()) - 1, 40)
+                self.assertLessEqual(len(snippet), 4200)
+            output = render("demo", result, findings, used_llm, github, notes, error, tracing)
+            self.assertIn("Explainer: Gemma (local) read 5 snippets", output)
+            self.assertIn("Hidden payload unwrapped (lib/config.js:7):", output)
+            self.assertEqual(output.count("    Gemma:"), 5)
+            self.assertTrue(all(item["source"] == "rule" for item in result["what_this_means"]))
         finally:
             server.shutdown()
             server.server_close()
             thread.join()
 
-    def test_model_bullets_match_finding_rule_and_location(self):
+    def test_ollama_request_times_out_after_30_seconds(self):
         findings = run_all(ROOT / "suspicious-assignment")
-        answer = {"verdict": "danger", "summary": "These files have risky commands. Review them before running.",
-                  "what_this_means": [
-                      {"file_line": ".npmrc:1", "rule": "npm-registry",
-                       "explanation": "When you run this project, a font could load on your machine."},
-                      {"file_line": ".npmrc:1", "rule": "npm-registry",
-                       "explanation": MODEL_SENTENCES["npm-registry"]},
-                      {"file_line": "lib/config.js:2", "rule": "asset-evaluation",
-                       "explanation": "If you run this project, this image could execute on your machine."},
-                      {"file_line": "lib/config.js:2", "rule": "obfuscated-names",
-                       "explanation": "If you review this project, obfuscated names could hide intent from you."},
-                      {"file_line": "lib/config.js:7", "rule": "encoded-code",
-                       "explanation": MODEL_SENTENCES["encoded-code"]},
-                      {"file_line": ".vscode/tasks.json:10", "rule": "vscode-folder-open",
-                       "explanation": MODEL_SENTENCES["vscode-folder-open"]}],
-                  "next_steps": ["Report the account to the platform."]}
-        body = json.dumps({"message": {"content": json.dumps(answer)}}).encode()
+        snippets = [{"file_line": "package.json:6", "rule": "package-script",
+                     "code": "echo hello"}]
+        body = BytesIO(json.dumps({"message": {"content": '{"sentence":"It prints hello in the terminal."}'}}).encode())
         with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
-                patch("sniffdog.verdict.urlopen", side_effect=lambda *_args, **_kwargs: BytesIO(body)):
-            verdict, used_llm = explain(findings, {}, "en")
+                patch("sniffdog.verdict.urlopen", return_value=body) as fetch:
+            result, used_llm = explain(findings, snippets)
         self.assertTrue(used_llm)
-        known = {(f"{item.file}:{item.line}", item.rule) for item in findings}
-        self.assertTrue(all((item["file_line"], item["rule"]) in known
-                            for item in verdict["what_this_means"]))
-        self.assertNotIn(("lib/config.js:2", "asset-evaluation"),
-                         {(item["file_line"], item["rule"]) for item in verdict["what_this_means"]})
-        self.assertEqual(len(verdict["what_this_means"]), 5)
-        self.assertEqual(verdict["what_this_means"][0]["explanation"],
-                         MODEL_SENTENCES["npm-registry"])
-        self.assertEqual(verdict["what_this_means"][0]["source"], "Gemma")
-        self.assertEqual(verdict["what_this_means"][3]["source"], "rule")
-        section = render("demo", verdict, findings, used_llm).split("What this means:\n", 1)[1]
-        section = section.split("Next steps:", 1)[0]
-        for line in section.splitlines():
-            match = re.match(r"  - (.+:\d+) \(([\w-]+)\) \((Gemma|rule)\):", line)
-            self.assertIsNotNone(match)
-            self.assertIn(match.groups()[:2], known)
-
-    def test_model_advice_cannot_send_user_to_recruiter(self):
-        findings = run_all(ROOT / "suspicious-assignment")
-        answer = {"verdict": "danger", "summary": "These files have risky commands. Review them before running.",
-                  "what_this_means": [], "next_steps": ["Report the account to the recruiter."]}
-        body = json.dumps({"message": {"content": json.dumps(answer)}}).encode()
-        with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
-                patch("sniffdog.verdict.urlopen", side_effect=lambda *_args, **_kwargs: BytesIO(body)) as fetch:
-            verdict, used_llm = explain(findings, {}, "en")
-        self.assertFalse(used_llm)
-        self.assertEqual(fetch.call_count, 2)
-        self.assertEqual(verdict["discard_reason"], "answer advised contacting the recruiter")
-        self.assertIn("LinkedIn", " ".join(verdict["next_steps"]))
-
-    def test_conditional_risk_is_allowed_but_completed_harm_is_not(self):
-        self.assertTrue(valid_sentence("If you run npm install, this script could contact a server."))
-        for sentence in ("Your system is compromised.", "The script has infected your computer.",
-                         "The code is stealing secrets.", "Report the account to the recruiter."):
-            with self.subTest(sentence=sentence):
-                self.assertFalse(valid_sentence(sentence))
-
-    def test_model_sentence_needs_consequence_opener_and_original_wording(self):
-        rule = "This task runs automatically when you open the folder in VS Code."
-        self.assertFalse(valid_sentence(rule, rule))
-        self.assertFalse(valid_sentence("The task could run on your machine when you open the folder.", rule))
-        self.assertFalse(valid_sentence("When you open the folder in VS Code, this task runs "
-                                        "automatically when you open the folder in VS Code.", rule))
-        self.assertTrue(valid_sentence("As soon as you open this folder in VS Code, the task could run "
-                                       "commands on your machine.", rule))
-        for opener in ("if you", "WHEN YOU", "AS SOON AS YOU", "Once you", "Opening", "Running"):
-            with self.subTest(opener=opener):
-                self.assertTrue(valid_sentence(f"  ‘{opener} inspect this project, commands could run "
-                                               "on your machine.’", rule))
-        self.assertFalse(valid_sentence("  “WHEN YOU open the folder in VS Code, this task runs "
-                                        "automatically when you open the folder in VS Code!”", rule))
-        registry = next(item for item in run_all(ROOT / "suspicious-assignment")
-                        if item.rule == "npm-registry")
-        self.assertTrue(meaning_matches(registry, "When you run npm install, npm could connect "
-                                        "to a nonstandard registry on your machine."))
-        self.assertTrue(meaning_matches(registry, "When you run npm install, npm might not find "
-                                        "packages in the nonstandard registry."))
-
-    def test_partial_gemma_bullets_keep_source_and_count(self):
-        findings = run_all(ROOT / "suspicious-assignment")
-        bullets = model_bullets(findings)
-        for item in bullets[1:]:
-            item["explanation"] = "This repeats a rule."
-
-        def reply(request, **_kwargs):
-            schema = json.loads(request.data)["format"]
-            answer = ({"verdict": "safe", "summary": "Static checks found risks. Review the files.",
-                       "what_this_means": bullets}
-                      if "what_this_means" in schema["properties"] else
-                      {"explanation": "This repeats a rule."})
-            return BytesIO(json.dumps({"message": {"content": json.dumps(answer)}}).encode())
-
-        with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
-                patch("sniffdog.verdict.urlopen", side_effect=reply):
-            result, used_llm = explain(findings, {})
-        self.assertFalse(used_llm)
         self.assertEqual(result["verdict"], "danger")
-        self.assertEqual(result["gemma_passed"], 1)
-        self.assertNotIn("discard_reason", result)
-        output = render("demo", result, findings, False)
-        self.assertIn("(Gemma):", output)
-        self.assertIn("Explainer: built-in rules (Gemma passed 1 of 5)", output)
-        self.assertNotIn("discarded", output)
-
-    def test_valid_sentences_accumulate_across_model_replies(self):
-        findings = run_all(ROOT / "suspicious-assignment")
-        first = model_bullets(findings)
-        second = model_bullets(findings)
-        for item in first[1:]:
-            item["explanation"] = "This repeats a rule."
-        second[0]["explanation"] = "This repeats a rule."
-        for item in second[3:]:
-            item["explanation"] = "This repeats a rule."
-        responses = [BytesIO(json.dumps({"message": {"content": json.dumps({
-            "verdict": "safe", "summary": "One sentence. Two sentences.",
-            "what_this_means": items})}}).encode()) for items in (first, second)]
-        with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
-                patch("sniffdog.verdict.urlopen", side_effect=responses) as fetch:
-            result, used_llm = explain(findings, {})
-        self.assertTrue(used_llm)
-        self.assertEqual(result["gemma_passed"], 3)
-        self.assertEqual(fetch.call_count, 2)
-        self.assertEqual([item["source"] for item in result["what_this_means"]],
-                         ["Gemma", "Gemma", "Gemma", "rule", "rule"])
+        self.assertEqual(fetch.call_args.kwargs["timeout"], 30)
 
     def test_jsonc_preserves_string_and_trailing_commas(self):
         source = '{"url":"https://example.com/a,}", // comment\n "tasks":[{"command":"echo",},],}'
@@ -273,21 +199,18 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(findings), 2)
         self.assertTrue(all(finding.severity == "medium" for finding in findings))
 
-    def test_full_scan_without_optional_services(self):
-        with patch.dict("os.environ", {"MONGODB_URI": "", "SENTRY_DSN": ""}):
-            verdict, findings, used_llm, github, error, memory_notes, tracing_on = scan_target(
-                str(ROOT / "safe-assignment"), True, "en", None, None)
-        self.assertEqual(verdict["verdict"], "safe")
-        self.assertEqual(findings, [])
+    def test_full_scan_without_optional_services_or_execution(self):
+        with patch.dict("os.environ", {"MONGODB_URI": "", "SENTRY_DSN": ""}), \
+                patch("subprocess.run", side_effect=AssertionError("executed")):
+            verdict, findings, used_llm, github, error, notes, tracing = scan_target(
+                str(ROOT / "suspicious-assignment"), True, "en", None, None)
+        self.assertEqual(verdict["verdict"], "danger")
         self.assertFalse(used_llm)
-        self.assertEqual(github, {})
-        self.assertIsNone(error)
-        self.assertIsNone(memory_notes)
-        self.assertFalse(tracing_on)
-        report = render("safe", verdict, findings, used_llm, github, memory_notes,
-                        error, tracing_on)
-        self.assertIn("memory: off", report)
-        self.assertIn("tracing: off", report)
+        self.assertEqual(len(findings), 13)
+        self.assertIsNone(notes)
+        self.assertFalse(tracing)
+        self.assertEqual(len(verdict["snippets"]), 5)
+        self.assertEqual(len(verdict["hidden_payloads"]), 1)
 
     def test_tracing_drops_text_and_keeps_counts(self):
         event = {"event_id": "abc", "type": "transaction", "transaction": "scan",
