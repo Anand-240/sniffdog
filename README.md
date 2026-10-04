@@ -1,66 +1,122 @@
 # SniffDog
 
-SniffDog reads a coding-assignment repository **before you run it**. It looks for commands that could start during installation or when a folder opens in VS Code, hidden code, disguised files, unusual package sources, and other warning signs. It never installs dependencies or executes code from the repository it scans.
+Review coding assignment repositories before you run them.
 
-Fake hiring exercises have been used to deliver malware to developers. [Microsoft](https://www.microsoft.com/en-us/security/blog/2026/03/11/contagious-interview-malware-delivered-through-fake-developer-job-interviews/), [Elastic Security Labs](https://security-labs.elastic.co/security-labs/contagious-interview-malware-svg-steganography), and [Socket](https://socket.dev/blog/north-korean-contagious-interview-campaign-drops-35-new-malicious-npm-packages) have documented the Contagious Interview campaign. Cloning a repository usually just copies files; running `npm install`, opening a trusted workspace, or starting the app can run project commands. See [npm lifecycle scripts](https://docs.npmjs.com/cli/v8/using-npm/scripts/) and [VS Code folder-open tasks](https://code.visualstudio.com/docs/debugtest/tasks).
+![SniffDog](docs/images/sniffdog-cover.png)
+
+[![SniffDog workflow](https://github.com/Anand-240/sniffdog/actions/workflows/sniffdog.yml/badge.svg)](https://github.com/Anand-240/sniffdog/actions/workflows/sniffdog.yml) [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)
+
+Demo video: [Watch SniffDog](https://youtu.be/1zoa5F4wANQ) | DEV post: [DEV_POST_URL]
+
+## Why this exists
+
+Fake recruiters send take-home repositories that hide malware. [Microsoft](https://www.microsoft.com/en-us/security/blog/2026/03/11/contagious-interview-malware-delivered-through-fake-developer-job-interviews/) and [Elastic Security Labs](https://www.elastic.co/security-labs/contagious-interview-malware-svg-steganography) have documented this Contagious Interview tactic. A trap may start during `npm install`, when a folder opens in VS Code, or when the developer starts the app. SniffDog reads the repository before those steps and does not run its code. It was built for a friend who got hit by one of these fake assignments.
+
+## What it looks like
+
+![Danger report for the suspicious demo](docs/images/sniffdog-danger.png)
+
+The harmless suspicious demo triggers 13 findings, with file locations, rule explanations, and selected code snippets.
+
+![Safe report for the safe demo](docs/images/sniffdog-safe.png)
+
+The safe demo has zero findings; public recruiter search results appear separately from its verdict.
+
+## Quick start
+
+Install Python 3.12 or newer and [Ollama](https://ollama.com/download) on macOS or Linux. Start Ollama, then run:
+
+```sh
+ollama pull gemma3:1b
+ollama pull nomic-embed-text
+git clone https://github.com/Anand-240/sniffdog.git
+cd sniffdog
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+sniffdog demo-repos/suspicious-assignment
+```
+
+For optional Atlas memory and Sentry tracing, install their extras:
+
+```sh
+pip install -e ".[memory,tracing]"
+```
+
+The embedding model is used by Atlas memory. Gemma describes selected code snippets. Without Ollama, SniffDog uses its built-in rule explanations.
+
+## Usage
+
+| Command | What it does |
+| --- | --- |
+| `sniffdog https://github.com/owner/repo` | Shallow-clones and scans a plain HTTPS repository URL. |
+| `sniffdog ./assignment` | Scans a local folder. |
+| `sniffdog ./assignment --company "Example Co"` | Adds public company search context when SerpApi is configured. |
+| `sniffdog ./assignment --recruiter "Jane Doe"` | Adds public recruiter search context when SerpApi is configured. |
+| `sniffdog ./assignment --lang hinglish` | Uses a Hinglish summary and next steps, and asks Gemma for Hinglish. |
+| `sniffdog ./assignment --no-llm` | Skips Gemma and uses rule explanations. |
+| `sniffdog ./assignment --json` | Prints the scan as JSON. |
+| `sniffdog . --no-llm --exclude demo-repos --exclude .kilo` | Skips both relative directory prefixes. Repeat `--exclude` as needed; globs are not supported. |
+| `sniffdog seed` | Adds known technique patterns to configured Atlas memory. |
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | SAFE |
+| 1 | CAUTION |
+| 2 | DANGER |
+| 3 | The repository could not be fetched or read |
 
 ## What it checks
 
-| Area | Examples |
-| --- | --- |
-| Install and editor triggers | npm lifecycle scripts; VS Code tasks that run when a folder opens |
-| Hidden JavaScript | encoded strings, `eval`, code after long whitespace, obfuscated names, child processes, raw IP URLs |
-| Disguised files | fonts or images containing JavaScript; scripts or extra content in SVG files |
-| Dependencies | custom npm registries, remote packages, lookalike names, unusual lockfile sources, checked-in `node_modules` |
-| Optional checks and context | GitHub age and commit history, past scans and known patterns; recruiter web results are context only |
+These are the file scanner rules. A finding points to the file and line when available.
 
-**Rules decide the verdict; Gemma reads the code.** A high-severity finding means DANGER, a medium finding means CAUTION when there is no high finding, and otherwise the verdict is SAFE. File findings cite a line when available; GitHub account findings do not. The report gives fixed, plain-English consequences for the rules, decodes printable payloads as data only (4 KB limit; about 120 characters shown), and asks local Gemma to describe up to five code snippets of at least 25 characters. Gemma cannot lower the verdict. Invalid or unavailable model replies are omitted.
+| Check | Example | Why it matters |
+| --- | --- | --- |
+| `package-script` | An npm lifecycle script or risky `start` command | Package commands can run during install, packaging, or a manual script. |
+| `vscode-folder-open` | A task with `runOn: folderOpen` | Opening the folder can start a command. |
+| `vscode-auto-tasks` | `task.allowAutomaticTasks: on` | VS Code may allow tasks to start automatically. |
+| `obfuscated-names` | Several `_0x1234` style names | Random-looking names make code harder to review. |
+| `encoded-code` | A long Base64 string or hex escapes | Encoded text can conceal readable code. |
+| `dynamic-evaluation` | `eval(...)` or `new Function(...)` | Text can be treated as JavaScript. |
+| `process-execution` | `child_process`, `execSync`, or `spawn` | Code can start another program or shell command. |
+| `raw-ip-url` | A URL with a numeric IP address | The destination is harder to recognize. |
+| `hidden-code` | Code after a long run of spaces | A reviewer can miss the trailing code. |
+| `long-line` | A JavaScript line over 5,000 characters | Commands can be hard to spot in one line. |
+| `disguised-asset` | JavaScript text in a `.woff` file | A font or image name may hide code or an invalid asset. |
+| `svg-trailing-code` | Text after `</svg>` | An image file can contain extra content. |
+| `svg-script` | A `<script>` tag inside SVG | Some viewers may run embedded JavaScript. |
+| `svg-base64` | A long encoded string in SVG | Encoded content is hard to inspect by eye. |
+| `asset-evaluation` | Reading a font, then calling `eval` | Asset text may be run as code. |
+| `committed-node-modules` | A root `node_modules/` directory | Present dependency files need review too. |
+| `npm-registry` | A custom registry in `.npmrc` | Packages can come from a different server. |
+| `remote-dependency` | A Git, URL, or local-path package | A dependency may come from outside the npm registry. |
+| `typosquat` | `expres` beside `express` | A near-match name may install the wrong package. |
+| `lockfile-source` | A lockfile URL outside the npm registry | The resolved package may come from another server. |
 
-A local model keeps source snippets on your machine, works for local folders without an internet connection after model download, has no per-request API fee, and lets you inspect the prompt and checks in this repository. Remote clones, optional GitHub/recruiter lookups, and optional MongoDB memory still need network access.
+## How it works
 
-## macOS setup
-
-Install Python 3.12 and [Ollama](https://formulae.brew.sh/formula/ollama), then start the local Ollama service and pull the two models:
-
-```sh
-brew install python@3.12 ollama
-brew services start ollama
-ollama pull gemma3:1b
-ollama pull nomic-embed-text
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e ".[memory,tracing]"
+```text
+Local folder or HTTPS URL
+  -> guarded shallow clone for URLs
+  -> file rules and optional GitHub metadata checks
+  -> SAFE, CAUTION, or DANGER
+  -> fixed consequences and optional Gemma code descriptions
+  -> optional Atlas notes, SerpApi web context, and Sentry timings
 ```
 
-The embedding model is needed only for optional pattern memory. The Gemma model is needed only for snippet descriptions. `--no-llm` works without Ollama. See the [Gemma model](https://ollama.com/library/gemma3) and [nomic embedding model](https://ollama.com/library/nomic-embed-text) pages for model details.
+Deterministic rules decide the verdict; Gemma only reads selected code snippets and cannot lower it. High-severity findings produce DANGER. Medium-severity findings produce CAUTION when no high finding exists. Other results are SAFE.
 
-## Use it
+For encoded-code findings, SniffDog may unwrap Base64 or hex escapes as data. It never executes the decoded text, limits it to 4 KB of mostly printable output, and shows about 120 characters. Remote clones accept plain HTTPS repository URLs and use a shallow clone with hooks disabled, symlinks disabled, other Git protocols blocked, prompts disabled, and Git LFS smudging skipped.
 
-```sh
-sniffdog demo-repos/safe-assignment --no-llm
-sniffdog demo-repos/suspicious-assignment
-sniffdog https://github.com/owner/repo --no-llm
-sniffdog https://github.com/owner/repo --company "Example Co" --recruiter "Jane Doe"
-sniffdog demo-repos/suspicious-assignment --lang hinglish
-sniffdog demo-repos/suspicious-assignment --no-llm --json
-python3 -m unittest discover -s tests -v
-```
+## Optional integrations
 
-The command exits **0** for SAFE, **1** for CAUTION, **2** for DANGER, and **3** if it cannot fetch the repository. SAFE, CAUTION, and DANGER each have their own next steps; only DANGER advises reporting a suspicious account. A GitHub pull-request workflow runs the deterministic JSON scan when package or editor-task files change and fails on DANGER.
+### Gemma via Ollama
 
-Use repeatable `--exclude PATH` to skip a directory prefix relative to the scan root, such as `--exclude demo-repos`; globs are not supported. If a local `.kilo` worktree contains another copy of the demos, add `--exclude .kilo` for a root scan.
+`OLLAMA_HOST` defaults to `http://localhost:11434`; `OLLAMA_MODEL` defaults to `gemma3:1b`. Gemma reads selected code snippets through the local Ollama host. Atlas memory separately uses local Ollama embeddings of finding evidence. If Ollama is unavailable, rule explanations still work. Use `--no-llm` to skip Gemma.
 
-The two `demo-repos/` folders are **harmless imitations**. The suspicious one contains inert examples of all planted signals, including a reserved example IP address and an invalid registry domain. Scan them; do not run their npm scripts.
+### MongoDB Atlas memory
 
-## Optional memory and tracing
-
-All optional services are off when their environment variables are unset. Use [.env.example](.env.example) as a list of variables to export; SniffDog does not automatically load that file.
-
-- `MONGODB_URI` enables past-scan notes and pattern matching. Run `sniffdog seed` after setting it and pulling `nomic-embed-text`.
-- `SENTRY_DSN` enables tracing with span names, timings, status, and numeric counts only. Source code, prompts, finding text, and query text are removed; automatic integrations are off and the CLI flushes before exit. Set `SENTRY_DEBUG=1` for SDK diagnostics.
-- `GITHUB_TOKEN` can raise GitHub API limits for remote scans. `SERPAPI_API_KEY` enables optional public recruiter/company searches when you supply names. Web results appear under "Recruiter check (web)" and never change the verdict.
-
-For Atlas memory, create a **Vector Search** index named `pattern_index` on database `sniffdog`, collection `patterns`. Its definition is:
+Set `MONGODB_URI` and install the `memory` extra to enable prior-scan notes and known-technique matches. Pull `nomic-embed-text`, create a Vector Search index named `pattern_index` in database `sniffdog`, collection `patterns`, then run `sniffdog seed`. The index definition is:
 
 ```json
 {
@@ -75,18 +131,105 @@ For Atlas memory, create a **Vector Search** index named `pattern_index` on data
 }
 ```
 
-The field and dimensions match SniffDog's local embedding code; see [MongoDB's vector index documentation](https://www.mongodb.com/docs/search/index/field-types/vector-type/). Memory stores repository URLs, commit hashes, verdicts, rule names, and short known-technique examples, never scanned source code. It skips cleanly if MongoDB, the index, or Ollama embeddings are unavailable.
+Without `MONGODB_URI`, the report says `memory: off`. Memory stores repository URLs, commit hashes, verdicts, and rule names for previous scans, not scanned source code. It also stores the harmless examples from `patterns/known_patterns.json`.
 
-## False positives and limits
+### Sentry tracing
 
-In a check of three small, well-known public repositories, SniffDog reported:
+Set `SENTRY_DSN` and install the `tracing` extra to send span names, timing, status, and numeric counts. The SDK has default and automatic integrations disabled. SniffDog strips source text, prompts, finding text, and query text, then flushes before the CLI exits. Without a DSN, the report says `tracing: off`. Set `SENTRY_DEBUG=1` for SDK diagnostics.
+
+![Sentry trace for a SniffDog scan](docs/images/sniffdog-sentry-trace.png)
+
+The local Gemma call takes 3.59 s of a 5.16 s scan.
+
+### SerpApi recruiter check
+
+Set `SERPAPI_API_KEY` to look up public reports for a supplied company or recruiter name. Results appear under `Recruiter check (web)` and never change the verdict. If a name is supplied but the key is unset, the section says the search is unavailable.
+
+### GitHub API
+
+For GitHub URLs, SniffDog requests public owner and repository metadata. Those deterministic metadata findings can affect the verdict. `GITHUB_TOKEN` is optional and can raise API rate limits. Without it, requests are unauthenticated; if metadata is unavailable, the file scan still runs.
+
+You can keep optional settings in a local `.env` file. SniffDog does not load it automatically. Leave unused values empty:
+
+```dotenv
+MONGODB_URI=
+SENTRY_DSN=
+SENTRY_DEBUG=
+SERPAPI_API_KEY=
+GITHUB_TOKEN=
+# OLLAMA_HOST defaults to http://localhost:11434
+# OLLAMA_MODEL defaults to gemma3:1b
+```
+
+## Use it in CI
+
+[The workflow](.github/workflows/sniffdog.yml) runs on pull requests that change package files, `.npmrc`, or VS Code task settings. It installs this package, runs the unit tests, then runs `sniffdog . --no-llm --json --exclude demo-repos`. It writes a verdict and finding count to the GitHub Actions step summary. DANGER fails the job; SAFE and CAUTION do not.
+
+To use it in another repository, copy the workflow and adapt its install step, test command, path triggers, and excluded directories. Its current `pip install .` step works because SniffDog lives in this repository.
+
+![Successful SniffDog GitHub Actions check](docs/images/sniffdog-github-actions.png)
+
+The pull request check passed after running tests and the deterministic scan.
+
+## Results
+
+These scans were run against the harmless demos and the named public repositories. Public repositories may change.
 
 | Repository | Verdict | Findings |
 | --- | --- | --- |
+| `demo-repos/suspicious-assignment` | DANGER | 13 of 13 planted signals |
+| `demo-repos/safe-assignment` | SAFE | 0 |
 | [MDN todo-react](https://github.com/mdn/todo-react) | SAFE | 0 |
 | [MDN Express Local Library](https://github.com/mdn/express-locallibrary-tutorial) | SAFE | 0 |
-| [Express generator](https://github.com/expressjs/generator) | CAUTION | 2 medium `process-execution` findings in test code |
+| [Express generator](https://github.com/expressjs/generator) | CAUTION | 2 medium `process-execution` findings in test files |
 
-None received DANGER. The Express generator result is useful context: test code can call `child_process` legitimately, so read the cited lines before acting on a CAUTION. These results describe the repositories at the time of the check; their contents may change.
+The Express generator finding is kept because test files can use `child_process`, and an assignment may ask you to run `npm test`. Read the cited lines before acting on CAUTION.
 
-SniffDog is a static review aid, not an antivirus or proof of safety. It can miss new tricks, and a rule can flag harmless code. Base64 and hex unwrapping only decode printable text; they do not execute it. Gemma can omit a step or describe code inaccurately, so compare any Gemma sentence with the snippet beside it. For package-focused analysis, see [Socket](https://socket.dev/) and [Datadog GuardDog](https://github.com/DataDog/guarddog).
+## Running the tests
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
+The current suite has 17 tests.
+
+## Project structure
+
+```text
+pyproject.toml                     # Package metadata and optional extras
+.env.example                       # Optional environment variable names
+sniffdog/
+  cli.py                           # Command-line entry point and scan flow
+  clone.py                         # Guarded HTTPS clone
+  common.py                        # Findings and file walking
+  scanner/
+    scripts.py                     # Package script checks
+    vscode.py                      # VS Code task checks
+    obfuscation.py                 # JavaScript and TypeScript checks
+    disguised.py                   # Image, font, and SVG checks
+    deps.py                        # Dependency source checks
+  verdict.py                       # Rule verdicts, consequences, and local Gemma
+  report.py                        # Text report
+  github_info.py                   # Public GitHub metadata
+  recruiter.py                     # SerpApi web context
+  memory.py                        # Atlas notes and pattern matching
+  tracing.py                       # Sentry spans
+patterns/known_patterns.json       # Harmless known-technique examples
+demo-repos/                         # Harmless sample repositories
+tests/test_core.py                  # Unit tests
+.github/workflows/sniffdog.yml     # Pull request scan
+docs/images/                       # README screenshots
+LICENSE                            # MIT license
+```
+
+## Limitations
+
+SniffDog uses static checks. It is not an antivirus, and SAFE is not a guarantee. It can miss new tricks or flag legitimate code. Gemma can omit or misdescribe an action, so compare its sentence with the snippet. [Socket](https://socket.dev/) and [Datadog GuardDog](https://github.com/DataDog/guarddog) go deeper on npm packages.
+
+## About the demo repos
+
+`demo-repos/suspicious-assignment` is harmless. Its scripts and files imitate attack techniques for testing. Scan it, but never run `npm install` or its scripts.
+
+## License
+
+[MIT](LICENSE).
