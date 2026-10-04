@@ -23,13 +23,11 @@ def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
                      f"{item['explanation']}" for item in bullets)
     else:
         lines.append("  No file-level findings to explain.")
-    for payload in verdict.get("hidden_payloads", []):
-        lines.append(f"Hidden payload unwrapped ({payload['file_line']}):")
-        lines.append(f"  {payload['preview']}")
     if verdict.get("snippets"):
         lines.append("Code snippets:")
         for item in verdict["snippets"]:
-            lines.append(f"  - {item['file_line']} ({item['rule']}):")
+            label = f" — unwrapped from {item['unwrapped_from']}" if item.get("unwrapped_from") else ""
+            lines.append(f"  - {item['file_line']} ({item['rule']}){label}:")
             lines.extend(f"    {line}" for line in item["code"].splitlines())
             if item.get("gemma"):
                 lines.append(f"    Gemma: {item['gemma']}")

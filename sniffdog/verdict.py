@@ -16,31 +16,31 @@ from sniffdog.tracing import count
 
 
 CONSEQUENCES = {
-    "package-script": "When npm runs this package script, its command executes on your machine.",
-    "vscode-folder-open": "Opening this folder in VS Code can start the task's command on your machine.",
-    "vscode-auto-tasks": "This setting lets VS Code run folder tasks automatically when you open the project.",
-    "encoded-code": "If code decodes and executes this string, hidden instructions could run on your machine.",
-    "hidden-code": "If this file runs, code hidden after the whitespace runs like other JavaScript.",
-    "obfuscated-names": "These names make the file's behavior harder to check before you run it.",
-    "dynamic-evaluation": "If this path runs, text passed to eval can execute as JavaScript on your machine.",
-    "process-execution": "If this path runs, it can start another process or shell command on your machine.",
-    "raw-ip-url": "If this path runs, it can contact the server at the IP address shown in the finding.",
-    "long-line": "A very long code line makes the file harder to inspect before you run it.",
-    "disguised-asset": "If another script executes this file, JavaScript can run despite its font or image name.",
-    "asset-evaluation": "If this path runs, text read from a font or image can execute as JavaScript.",
-    "svg-trailing-code": "Content after the SVG closing tag may be processed by software that reads this file.",
-    "svg-script": "Opening this SVG in software that permits scripts could run its embedded JavaScript.",
-    "svg-base64": "Encoded text in this SVG can hide content that is harder to inspect before opening it.",
-    "npm-registry": "When you run npm install, npm can fetch packages from the configured server.",
-    "remote-dependency": "When you install dependencies, npm can fetch this package from the listed external source.",
-    "typosquat": "Installing this similarly named dependency could put a different package on your machine.",
-    "lockfile-source": "Installing from this lockfile can download a package from the listed server.",
-    "committed-node-modules": "Bundled dependency files may be used without fetching fresh copies from npm.",
-    "new-github-owner": "This account has little history for you to check before trusting the assignment.",
-    "few-commits": "Few commits give you less history to review before running the project.",
-    "new-github-repo": "This repository has little age or history to help you judge its source.",
-    "little-github-history": "Limited GitHub activity gives you less context for checking this source.",
-    "recruiter-scam-report": "A search result links this name to a scam report that you should verify independently.",
+    "package-script": "When npm runs this package script, its command can run programs or fetch files on your machine.",
+    "vscode-folder-open": "Opening this folder in VS Code can start its task command without another click.",
+    "vscode-auto-tasks": "This setting lets VS Code launch task commands when you open the folder, before you choose to run them.",
+    "encoded-code": "An encoded string hides readable text; if a script decodes and runs it, hidden commands can run on your machine.",
+    "hidden-code": "If this file runs, code tucked after the whitespace runs too, even though it is easy to miss while reviewing.",
+    "obfuscated-names": "Random-looking names make it harder to spot what the code will do before you run it.",
+    "dynamic-evaluation": "If this line runs, it can turn a text string into JavaScript commands on your machine.",
+    "process-execution": "If this code runs, it can launch a shell command or another program on your machine.",
+    "raw-ip-url": "If this code runs, it can contact a numbered server directly, making the destination harder to recognize.",
+    "long-line": "A very long line is hard to read, so a command inside it can be missed before you run the file.",
+    "disguised-asset": "If this file is loaded as code, its JavaScript can run despite its font or image name.",
+    "asset-evaluation": "If this line runs, text from a font or image can be treated as JavaScript and run on your machine.",
+    "svg-trailing-code": "Extra content after the SVG ends may be read by another tool, so the file is not just the image it appears to be.",
+    "svg-script": "If you open this SVG in software that permits scripts, its embedded JavaScript can run.",
+    "svg-base64": "Base64 text in this SVG hides content that you cannot easily review before opening the file.",
+    "npm-registry": "When you run npm install, packages come from an unknown server instead of the official npm registry, so any of them could be swapped for malware.",
+    "remote-dependency": "When you install dependencies, npm can add code from the listed Git repo, URL, or local path to this project.",
+    "typosquat": "This name is close to a popular package, so installing it could put the wrong package on your machine.",
+    "lockfile-source": "Installing from this lockfile can download a package from a server outside the official npm registry.",
+    "committed-node-modules": "Checked-in dependency files may be used as-is, so their code can differ from what package.json says to install.",
+    "new-github-owner": "This GitHub account has little track record for you to check before trusting the assignment.",
+    "few-commits": "With only a few commits, you can see little history of how this project got its code.",
+    "new-github-repo": "This repository was created recently, so it has little history to inspect before you run it.",
+    "little-github-history": "Limited GitHub activity leaves fewer public changes to check before trusting this source.",
+    "recruiter-scam-report": "A search result links this name to a scam report, so check the report and company independently.",
 }
 CODE_RULES = {"package-script", "hidden-code", "encoded-code", "disguised-asset",
               "vscode-folder-open"}
@@ -153,22 +153,23 @@ def clean_snippet(value: str) -> str:
     return "".join(char if char.isprintable() or char in "\n\t" else "?" for char in text)
 
 
-def prepare_snippets(root: Path, findings: list[Finding]) -> tuple[list[dict], list[dict]]:
+def prepare_snippets(root: Path, findings: list[Finding]) -> list[dict]:
     snippets = []
-    payloads = []
     for finding in findings:
         location = f"{finding.file}:{finding.line}" if finding.line else finding.file
         decoded = unwrap_payload(root, finding) if finding.rule == "encoded-code" else None
-        if decoded:
-            preview = clean_snippet(decoded)[:200].replace("\n", "\\n")
-            payloads.append({"file_line": location, "preview": preview + ("…" if len(decoded) > 200 else "")})
         if finding.rule not in CODE_RULES or len(snippets) == 5:
             continue
         code = decoded if finding.rule == "encoded-code" else finding.evidence
         if code:
-            snippets.append({"file_line": location, "rule": finding.rule,
-                             "code": clean_snippet(code)})
-    return snippets, payloads
+            code = clean_snippet(code)
+            if decoded:
+                code = code[:120] + ("…" if len(code) > 120 else "")
+            item = {"file_line": location, "rule": finding.rule, "code": code}
+            if decoded:
+                item["unwrapped_from"] = ("hex escapes" if finding.evidence.startswith("\\x") else "base64")
+            snippets.append(item)
+    return snippets
 
 
 def valid_code_sentence(sentence: str, snippet: str) -> bool:
@@ -216,6 +217,8 @@ def explain(findings: list[Finding], snippets: list[dict], lang: str = "en") -> 
         system += " Answer in Hinglish using Roman script."
     read = 0
     for item in snippets:
+        if len(item["code"].strip()) < 25:
+            continue
         payload = {"model": os.getenv("OLLAMA_MODEL", "gemma3:1b"), "stream": False,
                    "format": SCHEMA, "options": {"temperature": 0, "num_ctx": 4096},
                    "messages": [{"role": "system", "content": system},

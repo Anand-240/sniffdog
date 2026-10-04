@@ -65,9 +65,11 @@ class CoreTests(unittest.TestCase):
             finding = Finding("encoded-code", "high", "payload.js", 1, short(token), "encoded")
             with patch("subprocess.run", side_effect=AssertionError("executed")):
                 self.assertEqual(unwrap_payload(root, finding), message.decode())
-            snippets, payloads = prepare_snippets(root, [finding])
-            self.assertEqual(snippets[0]["code"], message.decode().rstrip("\n"))
-            self.assertIn("console.log", payloads[0]["preview"])
+            snippets = prepare_snippets(root, [finding])
+            self.assertTrue(snippets[0]["code"].startswith("console.log('safe');"))
+            self.assertLessEqual(len(snippets[0]["code"]), 121)
+            self.assertTrue(snippets[0]["code"].endswith("…"))
+            self.assertEqual(snippets[0]["unwrapped_from"], "base64")
 
             escaped = "\\x41" * 40
             path.write_text(f"const x = '{escaped}';\n")
@@ -120,7 +122,7 @@ class CoreTests(unittest.TestCase):
                     str(ROOT / "suspicious-assignment"), False, "hinglish", None, None)
             self.assertEqual(result["verdict"], "danger")
             self.assertTrue(used_llm)
-            self.assertEqual(len(requests), 5)
+            self.assertEqual(len(requests), 3)
             for request in requests:
                 self.assertEqual(request["options"], {"temperature": 0, "num_ctx": 4096})
                 self.assertIn("sentence", request["format"]["required"])
@@ -128,10 +130,13 @@ class CoreTests(unittest.TestCase):
                 snippet = request["messages"][1]["content"]
                 self.assertLessEqual(len(snippet.splitlines()) - 1, 40)
                 self.assertLessEqual(len(snippet), 4200)
+                self.assertGreaterEqual(len(snippet.splitlines()[1].strip()), 25)
             output = render("demo", result, findings, used_llm, github, notes, error, tracing)
-            self.assertIn("Explainer: Gemma (local) read 5 snippets", output)
-            self.assertIn("Hidden payload unwrapped (lib/config.js:7):", output)
-            self.assertEqual(output.count("    Gemma:"), 5)
+            self.assertIn("Explainer: Gemma (local) read 3 snippets", output)
+            self.assertIn("lib/config.js:7 (encoded-code) — unwrapped from base64:", output)
+            self.assertNotIn("Hidden payload unwrapped", output)
+            self.assertEqual(output.count("    Gemma:"), 3)
+            self.assertNotIn(".vscode/tasks.json:10 (vscode-folder-open):\n    echo hello\n    Gemma:", output)
             self.assertTrue(all(item["source"] == "rule" for item in result["what_this_means"]))
         finally:
             server.shutdown()
@@ -141,7 +146,7 @@ class CoreTests(unittest.TestCase):
     def test_ollama_request_times_out_after_30_seconds(self):
         findings = run_all(ROOT / "suspicious-assignment")
         snippets = [{"file_line": "package.json:6", "rule": "package-script",
-                     "code": "echo hello"}]
+                     "code": "node scripts/setup.js && echo hello"}]
         body = BytesIO(json.dumps({"message": {"content": '{"sentence":"It prints hello in the terminal."}'}}).encode())
         with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
                 patch("sniffdog.verdict.urlopen", return_value=body) as fetch:
@@ -210,7 +215,7 @@ class CoreTests(unittest.TestCase):
         self.assertIsNone(notes)
         self.assertFalse(tracing)
         self.assertEqual(len(verdict["snippets"]), 5)
-        self.assertEqual(len(verdict["hidden_payloads"]), 1)
+        self.assertEqual(sum("unwrapped_from" in item for item in verdict["snippets"]), 1)
 
     def test_tracing_drops_text_and_keeps_counts(self):
         event = {"event_id": "abc", "type": "transaction", "transaction": "scan",

@@ -33,13 +33,13 @@ def scan_target(target: str, no_llm: bool, lang: str, company: str | None,
                     commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
                                             check=True, capture_output=True, text=True).stdout.strip()
                 findings = run_all(root)
-                snippets, payloads = prepare_snippets(root, findings)
+                snippets = prepare_snippets(root, findings)
         else:
             root = Path(target).expanduser()
             if not root.is_dir():
                 raise FileNotFoundError(f"Repository folder does not exist: {target}")
             findings = run_all(root)
-            snippets, payloads = prepare_snippets(root, findings)
+            snippets = prepare_snippets(root, findings)
         with span("github"):
             github, github_findings = inspect(target) if remote else ({}, [])
             count("findings", len(github_findings))
@@ -61,7 +61,6 @@ def scan_target(target: str, no_llm: bool, lang: str, company: str | None,
         with span("llm"):
             verdict, used_llm = (fallback(findings, lang), False) if no_llm else explain(findings, snippets, lang)
         verdict["snippets"] = snippets
-        verdict["hidden_payloads"] = payloads
         if client is not None:
             if remote:
                 with span("memory"):
