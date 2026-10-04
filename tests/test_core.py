@@ -12,6 +12,7 @@ from threading import Thread
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from urllib.error import URLError
 
 from sniffdog.clone import safe_clone
 from sniffdog.cli import main, scan_target
@@ -251,18 +252,44 @@ class CoreTests(unittest.TestCase):
 
     def test_recruiter_search_requires_name_and_key(self):
         with patch.dict("os.environ", {"SERPAPI_API_KEY": ""}):
-            self.assertEqual(search("Acme", None), ([], [], None))
-        result = {"organic_results": [{"title": "Acme fake recruiter report",
-                                       "link": "https://example.com/report",
-                                       "snippet": "Acme scam warning"}]}
-        responses = [BytesIO(json.dumps(result).encode()) for _ in range(2)]
+            self.assertIsNone(search(None, None))
+            self.assertFalse(search("Microsoft", None)["available"])
+
+        warnings = {"organic_results": [
+            {"title": f"Report Fraud - Microsoft {number}",
+             "link": f"https://example.com/report-{number}", "snippet": "Microsoft scam warning"}
+            for number in range(4)]}
+        plain = {"organic_results": [{"title": "Test Person biography",
+                                      "link": "https://example.com/bio", "snippet": "Recruiter profile"}]}
+        responses = [BytesIO(json.dumps(warnings).encode()), URLError("private query text"),
+                     BytesIO(json.dumps(plain).encode())]
+        with patch.dict("os.environ", {"SERPAPI_API_KEY": "test", "MONGODB_URI": "",
+                                    "SENTRY_DSN": ""}), \
+                patch("sniffdog.recruiter.urlopen", side_effect=responses) as fetch:
+            verdict, findings, used_llm, github, check, notes, tracing = scan_target(
+                str(ROOT / "safe-assignment"), True, "en", "Microsoft", "Test Person")
+        self.assertEqual(verdict["verdict"], "safe")
+        self.assertEqual(findings, [])
+        self.assertEqual(check["failed"], 1)
+        self.assertEqual(check["total"], 3)
+        self.assertEqual(len(check["names"][0]["reports"]), 4)
+        self.assertTrue(all(call.kwargs["timeout"] == 30 for call in fetch.call_args_list))
+        output = render("safe", verdict, findings, used_llm, github, notes, check, tracing)
+        self.assertIn("Recruiter check (web):", output)
+        self.assertIn("Scammers have impersonated Microsoft before (4 reports).", output)
+        self.assertIn("No scam reports found for Test Person.", output)
+        self.assertIn("1 of 3 searches failed.", output)
+        self.assertIn("https://example.com/report-2", output)
+        self.assertNotIn("https://example.com/report-3", output)
+        self.assertNotIn("private query text", output)
+
         with patch.dict("os.environ", {"SERPAPI_API_KEY": "test"}), \
-                patch("sniffdog.recruiter.urlopen", side_effect=responses):
-            results, findings, error = search("Acme", None)
-        self.assertIsNone(error)
-        self.assertEqual(len(results), 2)
-        self.assertEqual(len(findings), 2)
-        self.assertTrue(all(finding.severity == "medium" for finding in findings))
+                patch("sniffdog.recruiter.urlopen", side_effect=[BytesIO(b"{}"), BytesIO(b"{}")]):
+            clear = search("Microsoft", None)
+        self.assertEqual(clear["failed"], 0)
+        self.assertEqual(clear["names"][0]["reports"], [])
+        self.assertIn("No scam reports found for Microsoft. That's not proof the recruiter is real.",
+                      render("safe", verdict, findings, used_llm, github, notes, clear, tracing))
 
     def test_full_scan_without_optional_services_or_execution(self):
         with patch.dict("os.environ", {"MONGODB_URI": "", "SENTRY_DSN": ""}), \

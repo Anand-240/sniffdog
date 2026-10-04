@@ -52,10 +52,9 @@ def scan_target(target: str, no_llm: bool, lang: str, company: str | None,
             github, github_findings = inspect(target) if remote else ({}, [])
             count("findings", len(github_findings))
         with span("recruiter"):
-            _, recruiter_findings, search_error = search(company, recruiter)
-            count("findings", len(recruiter_findings))
+            recruiter_check = search(company, recruiter)
+            count("searches", recruiter_check["total"] if recruiter_check else 0)
         findings.extend(github_findings)
-        findings.extend(recruiter_findings)
         findings.sort(key=lambda item: (-RANK[item.severity], item.file, item.line or 0, item.rule))
         memory_notes = None
         with span("memory"):
@@ -77,7 +76,7 @@ def scan_target(target: str, no_llm: bool, lang: str, company: str | None,
                 if not stored:
                     memory_notes = None
             client.close()
-    return verdict, findings, used_llm, github, search_error, memory_notes, tracing_on
+    return verdict, findings, used_llm, github, recruiter_check, memory_notes, tracing_on
 
 
 def main() -> int:
@@ -96,17 +95,17 @@ def main() -> int:
         print(f"Seeded {total} known patterns." if total is not None else "memory: off")
         return 0 if total is not None else 1
     try:
-        verdict, findings, used_llm, github, search_error, memory_notes, tracing_on = scan_target(
+        verdict, findings, used_llm, github, recruiter_check, memory_notes, tracing_on = scan_target(
             args.target, args.no_llm, args.lang, args.company, args.recruiter,
             tuple(args.exclude))
         if args.json:
             print(json.dumps({"target": args.target, "verdict": verdict, "findings":
                               [finding.to_dict() for finding in findings], "used_llm": used_llm,
-                              "github": github, "recruiter_search_error": search_error,
+                              "github": github, "recruiter_check": recruiter_check,
                               "memory_notes": memory_notes, "tracing_on": tracing_on}, indent=2))
         else:
             print(render(args.target, verdict, findings, used_llm, github, memory_notes,
-                         search_error, tracing_on))
+                         recruiter_check, tracing_on))
         return {"safe": 0, "caution": 1, "danger": 2}[verdict["verdict"]]
     except (FileNotFoundError, ValueError, subprocess.CalledProcessError,
             subprocess.TimeoutExpired, OSError) as error:

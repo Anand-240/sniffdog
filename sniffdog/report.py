@@ -11,7 +11,7 @@ COLORS = {"safe": "\033[32m", "caution": "\033[33m", "danger": "\033[31m"}
 
 def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
            github: dict | None = None, memory_notes: list[str] | None = None,
-           search_error: str | None = None, tracing_on: bool = False) -> str:
+           recruiter_check: dict | None = None, tracing_on: bool = False) -> str:
     level = verdict["verdict"]
     badge = BADGES[level]
     if sys.stdout.isatty():
@@ -41,8 +41,24 @@ def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
     if github:
         lines.append("GitHub facts:")
         lines.extend(f"  {key}: {value}" for key, value in github.items())
-    if search_error:
-        lines.append(search_error)
+    if recruiter_check:
+        lines.append("Recruiter check (web):")
+        if not recruiter_check["available"]:
+            lines.append("  Search unavailable: set SERPAPI_API_KEY to check public reports.")
+        else:
+            for entry in recruiter_check["names"]:
+                name = entry["name"]
+                reports = entry["reports"]
+                if reports:
+                    lines.append(f"  Scammers have impersonated {name} before ({len(reports)} reports). "
+                                 f"Verify this recruiter on {name}'s official careers site before running anything.")
+                    lines.extend(f"  - {report['title']} — {report['url']}" for report in reports[:3])
+                elif not entry["completed"]:
+                    lines.append(f"  No reports could be checked for {name}.")
+                else:
+                    lines.append(f"  No scam reports found for {name}. That's not proof the recruiter is real.")
+            if recruiter_check["failed"]:
+                lines.append(f"  {recruiter_check['failed']} of {recruiter_check['total']} searches failed.")
     if memory_notes is None:
         lines.append("memory: off")
     else:

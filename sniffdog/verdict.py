@@ -40,7 +40,6 @@ CONSEQUENCES = {
     "few-commits": "With only a few commits, you can see little history of how this project got its code.",
     "new-github-repo": "This repository was created recently, so it has little history to inspect before you run it.",
     "little-github-history": "Limited GitHub activity leaves fewer public changes to check before trusting this source.",
-    "recruiter-scam-report": "A search result links this name to a scam report, so check the report and company independently.",
 }
 CODE_RULES = {"package-script", "hidden-code", "encoded-code", "disguised-asset",
               "vscode-folder-open"}
