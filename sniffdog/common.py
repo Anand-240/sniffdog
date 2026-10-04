@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 
-SKIP_DIRS = {".git", "node_modules", ".next", "dist", "build", ".venv", "venv", "__pycache__"}
+SKIP_DIRS = {".git", ".kilo", "node_modules", ".next", "dist", "build", ".venv", "venv", "__pycache__"}
 RANK = {"low": 0, "medium": 1, "high": 2}
 
 
@@ -23,9 +23,14 @@ class Finding:
         return asdict(self)
 
 
-def iter_files(root: Path):
+def iter_files(root: Path, excludes: tuple[Path, ...] = ()):
     for directory, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = [name for name in dirs if name not in SKIP_DIRS and not (Path(directory) / name).is_symlink()]
+        relative = Path(directory).relative_to(root)
+        dirs[:] = [name for name in dirs
+                   if name not in SKIP_DIRS
+                   and not (Path(directory) / name).is_symlink()
+                   and not any((relative / name) == prefix or prefix in (relative / name).parents
+                               for prefix in excludes)]
         for name in files:
             path = Path(directory) / name
             try:

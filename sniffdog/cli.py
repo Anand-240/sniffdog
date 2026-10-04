@@ -18,9 +18,17 @@ from sniffdog.tracing import configure, count, span, transaction
 from sniffdog.verdict import explain, fallback, prepare_snippets
 
 
+def exclude_path(value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute() or not path.parts or ".." in path.parts or any(
+            char in value for char in "*?[]"):
+        raise argparse.ArgumentTypeError("--exclude needs a relative directory path without globs")
+    return path
+
+
 def scan_target(target: str, no_llm: bool, lang: str, company: str | None,
-                recruiter: str | None) -> tuple[dict, list[Finding], bool, dict, str | None,
-                                                list[str] | None, bool]:
+                recruiter: str | None, excludes: tuple[Path, ...] = ()) -> tuple[
+                    dict, list[Finding], bool, dict, str | None, list[str] | None, bool]:
     tracing_on = configure()
     remote = target.startswith("https://")
     commit = ""
@@ -32,13 +40,13 @@ def scan_target(target: str, no_llm: bool, lang: str, company: str | None,
                     safe_clone(target, root)
                     commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
                                             check=True, capture_output=True, text=True).stdout.strip()
-                findings = run_all(root)
+                findings = run_all(root, excludes)
                 snippets = prepare_snippets(root, findings)
         else:
             root = Path(target).expanduser()
             if not root.is_dir():
                 raise FileNotFoundError(f"Repository folder does not exist: {target}")
-            findings = run_all(root)
+            findings = run_all(root, excludes)
             snippets = prepare_snippets(root, findings)
         with span("github"):
             github, github_findings = inspect(target) if remote else ({}, [])
@@ -80,6 +88,8 @@ def main() -> int:
     parser.add_argument("--lang", choices=("en", "hinglish"), default="en")
     parser.add_argument("--no-llm", action="store_true")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--exclude", type=exclude_path, action="append", default=[], metavar="PATH",
+                        help="skip a directory relative to the scan root (repeatable)")
     args = parser.parse_args()
     if args.target == "seed":
         total = seed()
@@ -87,7 +97,8 @@ def main() -> int:
         return 0 if total is not None else 1
     try:
         verdict, findings, used_llm, github, search_error, memory_notes, tracing_on = scan_target(
-            args.target, args.no_llm, args.lang, args.company, args.recruiter)
+            args.target, args.no_llm, args.lang, args.company, args.recruiter,
+            tuple(args.exclude))
     except (FileNotFoundError, ValueError, subprocess.CalledProcessError,
             subprocess.TimeoutExpired, OSError) as error:
         print(f"Could not fetch repository: {error}", file=sys.stderr)

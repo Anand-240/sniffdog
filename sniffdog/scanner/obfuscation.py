@@ -17,9 +17,9 @@ IP_URL = re.compile(r"https?://(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/|\b)")
 HIDDEN = re.compile(r"[ \t]{150,}(\S[^\n]*)")
 
 
-def scan(root: Path) -> list[Finding]:
+def scan(root: Path, excludes: tuple[Path, ...] = ()) -> list[Finding]:
     findings = []
-    for path in iter_files(root):
+    for path in iter_files(root, excludes):
         if path.suffix.lower() not in CODE:
             continue
         text = read_text(path)

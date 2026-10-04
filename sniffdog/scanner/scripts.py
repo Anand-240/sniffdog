@@ -14,9 +14,9 @@ RISKY = re.compile(r"\b(?:curl|wget|eval|base64|powershell|pwsh)\b|https?://|\bn
                    r"\b(?:bash|sh)\s+-c\b|\|\s*(?:ba|z)?sh\b", re.I)
 
 
-def scan(root: Path) -> list[Finding]:
+def scan(root: Path, excludes: tuple[Path, ...] = ()) -> list[Finding]:
     findings = []
-    for path in iter_files(root):
+    for path in iter_files(root, excludes):
         if path.name != "package.json":
             continue
         text = read_text(path)

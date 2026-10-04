@@ -27,12 +27,12 @@ def distance_one(left: str, right: str) -> bool:
     return any(left == right[:i] + right[i + 1:] for i in range(len(right)))
 
 
-def scan(root: Path) -> list[Finding]:
+def scan(root: Path, excludes: tuple[Path, ...] = ()) -> list[Finding]:
     findings = []
-    if (root / "node_modules").is_dir():
+    if Path("node_modules") not in excludes and (root / "node_modules").is_dir():
         findings.append(Finding("committed-node-modules", "medium", "node_modules", None,
                                 "node_modules/", "This repo includes installed dependencies; inspect them before use."))
-    for path in iter_files(root):
+    for path in iter_files(root, excludes):
         file = rel(root, path)
         if path.name == ".npmrc":
             text = read_text(path)

@@ -1,9 +1,10 @@
 """Tests for static scanning, local explanations and optional services."""
 
 import base64
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from io import BytesIO
+from io import BytesIO, StringIO
 import json
 from pathlib import Path
 import tempfile
@@ -12,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from sniffdog.clone import safe_clone
-from sniffdog.cli import scan_target
+from sniffdog.cli import main, scan_target
 from sniffdog.common import Finding, short
 from sniffdog.github_info import inspect
 from sniffdog.recruiter import search
@@ -43,6 +44,16 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(all(item.line is not None for item in findings))
         self.assertIn("actually JavaScript code pretending to be a font/image",
                       next(item for item in findings if item.rule == "disguised-asset").message)
+
+    def test_cli_excludes_demo_repos_from_root_scan(self):
+        output = StringIO()
+        args = ["sniffdog", str(ROOT.parent), "--no-llm", "--json", "--exclude", "demo-repos"]
+        with patch("sys.argv", args), patch.dict("os.environ", {"MONGODB_URI": "", "SENTRY_DSN": ""}), \
+                redirect_stdout(output):
+            status = main()
+        findings = json.loads(output.getvalue())["findings"]
+        self.assertEqual(status, 0)
+        self.assertFalse(any(item["file"].startswith("demo-repos/") for item in findings))
 
     def test_every_scanner_rule_has_a_plain_consequence(self):
         from sniffdog import github_info, recruiter

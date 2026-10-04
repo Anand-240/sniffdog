@@ -48,6 +48,8 @@ python3 -m unittest discover -s tests -v
 
 The command exits **0** for SAFE, **1** for CAUTION, **2** for DANGER, and **3** if it cannot fetch the repository. A GitHub pull-request workflow runs the deterministic JSON scan when package or editor-task files change and fails on DANGER.
 
+Use repeatable `--exclude PATH` to skip a directory prefix relative to the scan root, such as `--exclude demo-repos`; globs are not supported.
+
 The two `demo-repos/` folders are **harmless imitations**. The suspicious one contains inert examples of all planted signals, including a reserved example IP address and an invalid registry domain. Scan them; do not run their npm scripts.
 
 ## Optional memory and tracing

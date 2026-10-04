@@ -65,9 +65,9 @@ def strip_jsonc(text: str) -> str:
     return "".join(result)
 
 
-def scan(root: Path) -> list[Finding]:
+def scan(root: Path, excludes: tuple[Path, ...] = ()) -> list[Finding]:
     findings = []
-    for path in iter_files(root):
+    for path in iter_files(root, excludes):
         if path.parent.name != ".vscode" or path.name not in {"tasks.json", "settings.json"}:
             continue
         text = read_text(path)

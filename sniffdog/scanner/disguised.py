@@ -20,9 +20,9 @@ JS_LIKE = re.compile(r"\b(?:const|let|var|function|module\.exports|console\.log|
 BASE64 = re.compile(r"[A-Za-z0-9+/]{5000,}={0,2}")
 
 
-def scan(root: Path) -> list[Finding]:
+def scan(root: Path, excludes: tuple[Path, ...] = ()) -> list[Finding]:
     findings = []
-    for path in iter_files(root):
+    for path in iter_files(root, excludes):
         suffix = path.suffix.lower()
         file = rel(root, path)
         if suffix in MAGIC:

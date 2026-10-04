@@ -22,11 +22,12 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install .
+      - run: python3 -m unittest discover -s tests -v
       - name: Scan repository
         shell: bash
         run: |
           set +e
-          sniffdog . --no-llm --json > sniffdog.json
+          sniffdog . --no-llm --json --exclude demo-repos > sniffdog.json
           status=$?
           set -e
           if [ -s sniffdog.json ]; then
