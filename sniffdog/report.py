@@ -41,8 +41,14 @@ def render(target: str, verdict: dict, findings: list[Finding], used_llm: bool,
         lines.append("memory: on")
         lines.extend(f"  - {note}" for note in memory_notes)
     lines.append(f"tracing: {'on' if tracing_on else 'off'}")
-    lines.append(f"Explainer: {'Gemma (local)' if used_llm else 'built-in rules'}")
-    if verdict.get("discard_reason"):
+    if used_llm:
+        lines.append("Explainer: Gemma (local)")
+    elif "gemma_passed" in verdict:
+        lines.append(f"Explainer: built-in rules (Gemma passed "
+                     f"{verdict['gemma_passed']} of {verdict['gemma_total']})")
+    else:
+        lines.append("Explainer: built-in rules")
+    if verdict.get("discard_reason") and not verdict.get("gemma_passed"):
         lines.append(f"Gemma's answer was discarded: {verdict['discard_reason']}")
     lines.append("Static checks only — nothing from the repo was executed. Not a guarantee.")
     return "\n".join(lines)

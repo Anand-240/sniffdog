@@ -18,7 +18,7 @@ from sniffdog.report import render
 from sniffdog.scanner import run_all
 from sniffdog.scanner.vscode import strip_jsonc
 from sniffdog.tracing import before_send_transaction
-from sniffdog.verdict import explain, rule_verdict, valid_sentence
+from sniffdog.verdict import explain, meaning_matches, rule_verdict, valid_sentence
 
 
 ROOT = Path(__file__).resolve().parents[1] / "demo-repos"
@@ -164,6 +164,65 @@ class CoreTests(unittest.TestCase):
                                         "automatically when you open the folder in VS Code.", rule))
         self.assertTrue(valid_sentence("As soon as you open this folder in VS Code, the task could run "
                                        "commands on your machine.", rule))
+        for opener in ("if you", "WHEN YOU", "AS SOON AS YOU", "Once you", "Opening", "Running"):
+            with self.subTest(opener=opener):
+                self.assertTrue(valid_sentence(f"  ‘{opener} inspect this project, commands could run "
+                                               "on your machine.’", rule))
+        self.assertFalse(valid_sentence("  “WHEN YOU open the folder in VS Code, this task runs "
+                                        "automatically when you open the folder in VS Code!”", rule))
+        registry = next(item for item in run_all(ROOT / "suspicious-assignment")
+                        if item.rule == "npm-registry")
+        self.assertTrue(meaning_matches(registry, "When you run npm install, npm could connect "
+                                        "to a nonstandard registry on your machine."))
+        self.assertTrue(meaning_matches(registry, "When you run npm install, npm might not find "
+                                        "packages in the nonstandard registry."))
+
+    def test_partial_gemma_bullets_keep_source_and_count(self):
+        findings = run_all(ROOT / "suspicious-assignment")
+        bullets = model_bullets(findings)
+        for item in bullets[1:]:
+            item["explanation"] = "This repeats a rule."
+
+        def reply(request, **_kwargs):
+            schema = json.loads(request.data)["format"]
+            answer = ({"verdict": "safe", "summary": "Static checks found risks. Review the files.",
+                       "what_this_means": bullets}
+                      if "what_this_means" in schema["properties"] else
+                      {"explanation": "This repeats a rule."})
+            return BytesIO(json.dumps({"message": {"content": json.dumps(answer)}}).encode())
+
+        with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
+                patch("sniffdog.verdict.urlopen", side_effect=reply):
+            result, used_llm = explain(findings, {})
+        self.assertFalse(used_llm)
+        self.assertEqual(result["verdict"], "danger")
+        self.assertEqual(result["gemma_passed"], 1)
+        self.assertNotIn("discard_reason", result)
+        output = render("demo", result, findings, False)
+        self.assertIn("(Gemma):", output)
+        self.assertIn("Explainer: built-in rules (Gemma passed 1 of 5)", output)
+        self.assertNotIn("discarded", output)
+
+    def test_valid_sentences_accumulate_across_model_replies(self):
+        findings = run_all(ROOT / "suspicious-assignment")
+        first = model_bullets(findings)
+        second = model_bullets(findings)
+        for item in first[1:]:
+            item["explanation"] = "This repeats a rule."
+        second[0]["explanation"] = "This repeats a rule."
+        for item in second[3:]:
+            item["explanation"] = "This repeats a rule."
+        responses = [BytesIO(json.dumps({"message": {"content": json.dumps({
+            "verdict": "safe", "summary": "One sentence. Two sentences.",
+            "what_this_means": items})}}).encode()) for items in (first, second)]
+        with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11434"}), \
+                patch("sniffdog.verdict.urlopen", side_effect=responses) as fetch:
+            result, used_llm = explain(findings, {})
+        self.assertTrue(used_llm)
+        self.assertEqual(result["gemma_passed"], 3)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual([item["source"] for item in result["what_this_means"]],
+                         ["Gemma", "Gemma", "Gemma", "rule", "rule"])
 
     def test_jsonc_preserves_string_and_trailing_commas(self):
         source = '{"url":"https://example.com/a,}", // comment\n "tasks":[{"command":"echo",},],}'

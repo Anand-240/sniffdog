@@ -20,8 +20,7 @@ SCHEMA = {
         "summary": {"type": "string"},
         "what_this_means": {"type": "array", "items": {"type": "object", "properties": {
             "rule": {"type": "string"}, "file_line": {"type": "string"},
-            "explanation": {"type": "string", "pattern": "^(If you|When you|As soon as you)",
-                            "maxLength": 300}},
+            "explanation": {"type": "string", "maxLength": 300}},
             "required": ["rule", "file_line", "explanation"]}},
     },
     "required": ["verdict", "summary", "what_this_means"],
@@ -93,7 +92,7 @@ def meaning_matches(finding: Finding, explanation: str) -> bool:
     source = {word for word in re.findall(r"[a-z]{4,}", finding.message.lower()) if word not in ignored}
     words = set(re.findall(r"[a-z]{4,}", explanation.lower()))
     effect = explanation.split(",", 1)[-1]
-    action = re.search(r"\b(?:run|start|execut\w*|download|fetch|install|load|read|come|"
+    action = re.search(r"\b(?:run|start|execut\w*|download|fetch|install|load|read|come|find|connect\w*|"
                        r"evaluat(?:e|es|ed|ing)|send|contact|replace|pull)\b", effect, re.I)
     return bool(source & words) and bool(action)
 
@@ -101,11 +100,14 @@ def meaning_matches(finding: Finding, explanation: str) -> bool:
 def valid_sentence(value: str, rule_message: str = "") -> bool:
     if not value or len(value) > 300 or CONTACT_RECRUITER.search(value) or ALREADY_HAPPENED.search(value):
         return False
-    if not re.match(r"^(?:If you|When you|As soon as you)\b", value.strip(), re.I):
+    sentence = value.strip().lstrip("\"'“”‘’ ")
+    if not re.match(r"^(?:If you|When you|As soon as you|Once you|Opening|Running)\b", sentence, re.I):
         return False
-    if rule_message and SequenceMatcher(None, value.lower(), rule_message.lower()).ratio() > 0.6:
+    normalized = re.sub(r"[^\w\s]", "", sentence.lower())
+    rule_normalized = re.sub(r"[^\w\s]", "", rule_message.lower())
+    if rule_message and SequenceMatcher(None, normalized, rule_normalized).ratio() > 0.6:
         return False
-    return len(re.split(r"(?<=[.!?])\s+", value.strip())) == 1
+    return len(re.split(r"(?<=[.!?])\s+", sentence)) == 1
 
 
 def opening_for(rule: str) -> str:
@@ -123,8 +125,9 @@ def explain(findings: list[Finding], context: dict, lang: str = "en") -> tuple[d
         return result, False
     language = "Use Hinglish in Roman script." if lang == "hinglish" else "Use plain English."
     system = ("For each finding, write ONE plain sentence about the consequence on the user's "
-              "machine if they run or open the project. Begin with 'If you', 'When you', or "
-              "'As soon as you'. Explain the effect, not the rule wording. Copy rule and "
+              "machine if they run or open the project. Begin with 'If you', 'When you', "
+              "'As soon as you', 'Once you', 'Opening', or 'Running'. Explain the effect, "
+              "not the rule wording. Copy rule and "
               "file_line exactly; return one what_this_means object per finding, in order. "
               + language + " Nothing was executed. Never claim the user's machine is infected "
               "or compromised. Only describe what the files would do if run. Never tell the "
@@ -152,13 +155,14 @@ def explain(findings: list[Finding], context: dict, lang: str = "en") -> tuple[d
         return result, False
     if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
         return result, False
-    best = []
+    best = {}
     best_summary = None
     reason = "invalid response"
     for attempt in range(2):
         if attempt:
             payload["messages"].append({"role": "system", "content":
-                                        "Retry: begin each sentence with If you, When you, or As soon as you. "
+                                        "Retry: begin each sentence with If you, When you, As soon as you, "
+                                        "Once you, Opening, or Running. "
                                         "Describe a consequence on the user's machine, not the rule message. "
                                         "Copy each rule and file_line exactly. Nothing has happened yet."})
         request = Request(f"{host}/api/chat", data=json.dumps(payload).encode(),
@@ -190,9 +194,11 @@ def explain(findings: list[Finding], context: dict, lang: str = "en") -> tuple[d
                     and not CONTACT_RECRUITER.search(summary)
                     and not ALREADY_HAPPENED.search(summary)):
                 best_summary = summary
-        valid = []
         for finding in selected:
             location = f"{finding.file}:{finding.line}"
+            key = (location, finding.rule)
+            if key in best:
+                continue
             for item in answer["what_this_means"]:
                 if (not isinstance(item, dict) or item.get("file_line") != location
                         or item.get("rule") != finding.rule
@@ -200,22 +206,19 @@ def explain(findings: list[Finding], context: dict, lang: str = "en") -> tuple[d
                     continue
                 sentence = item["explanation"].strip()
                 if valid_sentence(sentence, finding.message) and meaning_matches(finding, sentence):
-                    valid.append({"rule": finding.rule, "file_line": location,
-                                  "explanation": sentence, "source": "Gemma"})
+                    best[key] = {"rule": finding.rule, "file_line": location,
+                                 "explanation": sentence, "source": "Gemma"}
                     break
-        if len(valid) > len(best):
-            best = valid
         if len(best) >= min(3, len(selected)):
             break
         reason = f"only {len(best)} of {len(selected)} sentences passed validation"
     if len(best) < min(3, len(selected)) and reason != "answer advised contacting the recruiter":
-        known = {(item["file_line"], item["rule"]) for item in best}
         focused_schema = {"type": "object", "properties": {"explanation": {
-            "type": "string", "pattern": "^(If you|When you|As soon as you)", "maxLength": 300}},
+            "type": "string", "maxLength": 300}},
             "required": ["explanation"], "additionalProperties": False}
         for finding in selected:
             location = f"{finding.file}:{finding.line}"
-            if (location, finding.rule) in known:
+            if (location, finding.rule) in best:
                 continue
             opening = opening_for(finding.rule)
             focused = {"model": payload["model"], "stream": False, "format": focused_schema,
@@ -238,15 +241,16 @@ def explain(findings: list[Finding], context: dict, lang: str = "en") -> tuple[d
             except (HTTPError, URLError, TimeoutError, OSError, ValueError, KeyError, TypeError):
                 continue
             if valid_sentence(sentence, finding.message) and meaning_matches(finding, sentence):
-                best.append({"rule": finding.rule, "file_line": location,
-                             "explanation": sentence, "source": "Gemma"})
+                best[(location, finding.rule)] = {"rule": finding.rule, "file_line": location,
+                                                  "explanation": sentence, "source": "Gemma"}
         reason = f"only {len(best)} of {len(selected)} sentences passed validation"
-    replacements = {(item["file_line"], item["rule"]): item for item in best}
-    result["what_this_means"] = [replacements.get((item["file_line"], item["rule"]), item)
+    result["what_this_means"] = [best.get((item["file_line"], item["rule"]), item)
                                  for item in result["what_this_means"]]
     if best_summary:
         result["summary"] = best_summary
     used_llm = len(best) >= min(3, len(selected))
-    if not used_llm:
+    result["gemma_passed"] = len(best)
+    result["gemma_total"] = len(selected)
+    if not best:
         result["discard_reason"] = reason
     return result, used_llm
