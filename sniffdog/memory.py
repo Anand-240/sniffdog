@@ -22,7 +22,8 @@ def connect():
     except ImportError:
         return None
     try:
-        client = MongoClient(uri, serverSelectionTimeoutMS=2000)
+        client = MongoClient(uri, serverSelectionTimeoutMS=2000,
+                             connectTimeoutMS=2000, socketTimeoutMS=2000)
         client.admin.command("ping")
         return client
     except PyMongoError:
