@@ -7,11 +7,11 @@ import os
 _sdk = None
 
 
-def before_send(event, hint):
+def before_send(event, _hint):
     return None
 
 
-def before_send_transaction(event, hint):
+def before_send_transaction(event, _hint):
     kept = {key: event[key] for key in ("event_id", "type", "transaction",
                                          "start_timestamp", "timestamp", "platform") if key in event}
     trace = event.get("contexts", {}).get("trace", {})
